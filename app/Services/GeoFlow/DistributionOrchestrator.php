@@ -4,6 +4,8 @@ namespace App\Services\GeoFlow;
 
 use App\Exceptions\ArticleRiskGateException;
 use App\Exceptions\DistributionTaskRevisionMismatch;
+use App\Enums\PublicationGate;
+use App\Exceptions\PublicationGateException;
 use App\Jobs\ProcessArticleDistributionJob;
 use App\Models\Article;
 use App\Models\ArticleDistribution;
@@ -156,6 +158,12 @@ class DistributionOrchestrator
                 return;
             }
 
+            $articleModel->loadMissing('clientProject');
+            if ($action !== 'delete'
+                && $articleModel->clientProject?->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
+                return;
+            }
+
             $articleModel->load('task.distributionChannels');
             $publishScope = (string) ($articleModel->task?->publish_scope ?? 'local_and_distribution');
             if ($publishScope === 'local_only') {
@@ -225,6 +233,13 @@ class DistributionOrchestrator
                         ->afterCommit();
                 });
             }
+        } catch (PublicationGateException $e) {
+            $this->log('info', '文章分发被发布门闸阻断', null, null, $article instanceof Article ? (int) $article->id : $article, [
+                'event' => 'distribution.publication_gate_blocked',
+                'gate_code' => $e->gateCode,
+                'target' => $e->target,
+                'gate' => $e->gate,
+            ]);
         } catch (Throwable $e) {
             $this->log('error', '文章分发入队失败：'.$e->getMessage(), null, null, $article instanceof Article ? (int) $article->id : $article, [
                 'event' => 'distribution.enqueue_failed',
@@ -371,7 +386,7 @@ class DistributionOrchestrator
 
             $count = 0;
             ArticleDistribution::query()
-                ->with('article:id,status')
+                ->with('article:id,status,client_project_id')
                 ->where('distribution_channel_id', (int) $lockedChannel->id)
                 ->where('action', '!=', 'delete')
                 ->where('status', '!=', 'sending')
@@ -382,6 +397,10 @@ class DistributionOrchestrator
                 ->chunkById(100, function ($distributions) use (&$count, $lockedChannel): void {
                     foreach ($distributions as $distribution) {
                         if (! $distribution instanceof ArticleDistribution || ! $distribution->article) {
+                            continue;
+                        }
+                        $distribution->article->loadMissing('clientProject:id,publication_gate');
+                        if ($distribution->article->clientProject?->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
                             continue;
                         }
 
@@ -545,8 +564,16 @@ class DistributionOrchestrator
                 'category:id,name,slug',
                 'author:id,name',
                 'task:id,name,publish_scope',
+                'clientProject:id,publication_gate,status',
                 'articleImages.image',
             ]);
+            if ($lockedArticle->clientProject?->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
+                throw new PublicationGateException(
+                    'platform_approval_required',
+                    'channel',
+                    PublicationGate::PLATFORM_APPROVAL->value,
+                );
+            }
             if (! $this->isDistributableSnapshot($lockedArticle)) {
                 throw new \RuntimeException('文章当前状态不允许分发');
             }

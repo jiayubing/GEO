@@ -98,6 +98,58 @@ class ProjectScopedArticleSurfaceTest extends TestCase
             ->assertSee(__('admin.task_create.page_heading'));
     }
 
+    public function test_admin_can_read_and_switch_project_context_from_backend_header_api(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'context-api-admin',
+            'password' => 'secret-123',
+            'email' => 'context-api-admin@example.com',
+            'display_name' => 'Context API Admin',
+            'role' => 'super_admin',
+            'status' => 'active',
+        ]);
+        $project = $this->project('context-api');
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.project-context.show'))
+            ->assertOk()
+            ->assertJsonPath('current_project_id', null)
+            ->assertJsonPath('projects.0.id', $project->id);
+
+        $this->actingAs($admin, 'admin')
+            ->postJson(route('admin.project-context.switch'), ['project_id' => $project->id])
+            ->assertOk()
+            ->assertJsonPath('current_project_id', $project->id);
+
+        $this->assertSame(
+            $project->id,
+            $this->app['session.store']->get(ProjectAccessService::SESSION_KEY),
+        );
+    }
+
+    public function test_operator_can_pause_task_in_selected_project(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('task-pause');
+        $task = Task::query()->create([
+            'name' => 'Pause me',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'client_project_id' => $project->id,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->post(route('admin.tasks.toggle-status', ['taskId' => $task->id]), ['status' => 'active'])
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('tasks', [
+            'id' => $task->id,
+            'client_project_id' => $project->id,
+            'status' => 'paused',
+            'schedule_enabled' => 0,
+        ]);
+    }
+
     private function project(string $slug): ClientProject
     {
         $client = Client::query()->create(['name' => 'Client '.$slug, 'slug' => 'client-'.$slug]);

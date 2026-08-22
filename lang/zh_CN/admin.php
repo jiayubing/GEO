@@ -53,6 +53,12 @@ return [
             'open_update_center' => '更新中心',
         ],
     ],
+    'project_context' => [
+        'label' => '项目',
+        'placeholder' => '选择项目',
+        'loading' => '加载项目…',
+        'switch_error' => '项目切换失败，请刷新重试',
+    ],
     'system_updates' => [
         'page_title' => '系统更新中心',
         'page_subtitle' => '检查 GitHub 新版本，先生成安全更新计划，再备份将被覆盖的本地文件。',

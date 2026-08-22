@@ -139,6 +139,19 @@
                 </div>
             </nav>
             <div class="flex shrink-0 items-center gap-2 sm:gap-3 ml-auto">
+                <div class="flex items-center rounded-lg border border-gray-200 bg-white px-2 py-1 shadow-sm">
+                    <i data-lucide="folder-kanban" class="w-4 h-4 text-gray-400 mr-1.5"></i>
+                    <label for="admin-project-context" class="sr-only">{{ __('admin.project_context.label') }}</label>
+                    <select id="admin-project-context"
+                            class="admin-project-context-select max-w-[10rem] appearance-none bg-transparent pr-5 text-sm font-medium text-gray-700 outline-none cursor-pointer"
+                            aria-label="{{ __('admin.project_context.label') }}"
+                            data-project-context-url="{{ route('admin.project-context.show') }}"
+                            data-project-switch-url="{{ route('admin.project-context.switch') }}"
+                            data-project-placeholder="{{ __('admin.project_context.placeholder') }}"
+                            data-project-switch-error="{{ __('admin.project_context.switch_error') }}">
+                        <option value="">{{ __('admin.project_context.loading') }}</option>
+                    </select>
+                </div>
                 <div class="relative">
                     <button onclick="toggleAdminNotifications()" class="relative rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors duration-200" type="button" aria-label="{{ __('admin.header.notifications.label') }}" title="{{ __('admin.header.notifications.label') }}">
                         <i data-lucide="bell" class="w-5 h-5"></i>
@@ -290,6 +303,13 @@
         background-size: 4px 4px, 4px 4px;
         background-repeat: no-repeat;
     }
+
+    .admin-project-context-select {
+        background-image: linear-gradient(45deg, transparent 50%, #6b7280 50%), linear-gradient(135deg, #6b7280 50%, transparent 50%);
+        background-position: calc(100% - 8px) 52%, calc(100% - 4px) 52%;
+        background-size: 4px 4px, 4px 4px;
+        background-repeat: no-repeat;
+    }
 </style>
 
 <script>
@@ -313,6 +333,65 @@
             menu.classList.toggle('hidden');
         }
     }
+
+    async function loadAdminProjectContext() {
+        const select = document.getElementById('admin-project-context');
+        if (!select) return;
+        try {
+            const response = await fetch(select.dataset.projectContextUrl, { headers: { 'Accept': 'application/json' } });
+            if (!response.ok) throw new Error('context_load_failed');
+            const payload = await response.json();
+            select.replaceChildren();
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = select.dataset.projectPlaceholder;
+            select.appendChild(placeholder);
+            (payload.projects || []).forEach((project) => {
+                const option = document.createElement('option');
+                option.value = String(project.id);
+                option.textContent = project.name;
+                option.selected = Number(payload.current_project_id) === Number(project.id);
+                select.appendChild(option);
+            });
+            if (payload.current_project_id) select.value = String(payload.current_project_id);
+        } catch (error) {
+            select.replaceChildren();
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = select.dataset.projectSwitchError;
+            select.appendChild(option);
+        }
+    }
+
+    async function switchAdminProjectContext(select) {
+        if (!select.value) return;
+        select.disabled = true;
+        try {
+            const response = await fetch(select.dataset.projectSwitchUrl, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+                },
+                body: JSON.stringify({ project_id: Number(select.value) }),
+            });
+            if (!response.ok) throw new Error('context_switch_failed');
+            window.location.reload();
+        } catch (error) {
+            alert(select.dataset.projectSwitchError);
+            select.disabled = false;
+            loadAdminProjectContext();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        const select = document.getElementById('admin-project-context');
+        if (select) {
+            select.addEventListener('change', () => switchAdminProjectContext(select));
+            loadAdminProjectContext();
+        }
+    });
 
     document.addEventListener('click', function (event) {
         const userMenu = document.getElementById('user-menu');

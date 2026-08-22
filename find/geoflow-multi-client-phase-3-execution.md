@@ -6,7 +6,7 @@
 >
 > 执行模式：GEOFlow `development` / 公开状态转换、队列调度、后台/API/CLI 入口和外部发布副作用
 >
-> 当前状态：工作包拆分完成，尚未开始阶段 3 生产代码实施。
+> 当前状态：阶段 3（3A-3F）已完成；完整套件仍保留阶段 2 的既有项目作用域 403 失败，已分类并登记，不属于阶段 3 回归。
 
 ## 1. 阶段目标
 
@@ -19,6 +19,13 @@
 ## 2. 拆分后的工作包
 
 ### 3A：发布门闸合同、默认值与状态矩阵
+
+**执行状态：已完成（2026-08-23）**
+
+- 新增 `PublicationGate`（`legacy_auto` / `platform_approval`）及 `publication_gate` 项目字段迁移；新项目默认 `platform_approval`，legacy 项目显式回填/校正为 `legacy_auto`。
+- 新增 `PublicationGateContract`，覆盖 local/channel/manual 目标、项目状态、审核状态、中央站许可、渠道 membership 和平台审批；`approved` 不自动授予平台公开许可。
+- 验证：`docker compose run --rm app php artisan test tests/Unit/PublicationGateContractTest.php tests/Unit/ClientProjectDomainSchemaTest.php`；11 tests、51 assertions 通过。
+- 发现脚本在当前工作区缺失；验证使用 Docker 容器内 PHP，未执行宿主机 PHP。
 
 **目标**
 
@@ -41,6 +48,14 @@
 
 ### 3B：统一状态转换与发布门闸 owner
 
+**执行状态：已完成（2026-08-23）**
+
+- `ArticleWorkflowTransitionService` 在同一行锁事务内、风险扫描和状态写入前调用 `PublicationGateContract`；`platform_approval` 未获许可抛出 typed `PublicationGateException`，拒绝不写状态、不产生风险扫描。
+- legacy 项目和无项目旧文章保持既有自动发布兼容；重复公开 transition 受行锁与现有风险门闸保护。
+- 修复 `ArticleGeoFlowService::updateArticle` 风险事务闭包遗漏项目上下文的问题。
+- 验证：`docker compose run --rm app php artisan test tests/Feature/ArticleWorkflowTransitionServiceTest.php`（5 tests、19 assertions）；API 风险相邻回归（2 tests、15 assertions）通过；Worker 风险回归通过。
+- 当前边界：API/Admin 对 `PublicationGateException` 的稳定 HTTP 409 映射留在 3D；Worker/分发外部结果分类留在 3C/3E。
+
 **目标**
 
 - 将 `ArticleWorkflowTransitionService`（或当前代码中等价的唯一状态 owner）接入 gate 检查、状态转换、审计和幂等控制。
@@ -60,6 +75,12 @@
 - 外部调用异常能被转换为稳定的结果类型/错误码，调用方可区分未开始、确认失败和不确定。
 
 ### 3C：Worker、队列、调度与 CLI 接入
+
+**执行状态：已完成（2026-08-23）**
+
+- `WorkerExecutionService` 在执行时重新读取项目 gate；`platform_approval` 只返回 `await_platform_approval` 草稿结果，不触发分发入队，legacy 项目保持自动发布。
+- 队列/恢复路径复用同一 Worker gate 检查；Job payload 与日志合同未增加 gate 可覆盖上下文或敏感正文。
+- 验证：`docker compose run --rm app php artisan test tests/Feature/WorkerArticleRiskWorkflowTest.php tests/Feature/WorkerProjectIsolationTest.php tests/Feature/TaskTransactionSafetyTest.php`；21 tests、102 assertions 通过。
 
 **目标**
 
@@ -81,6 +102,12 @@
 
 ### 3D：API、后台审核/发布与批量状态入口
 
+**执行状态：已完成（2026-08-23）**
+
+- API 统一将 `PublicationGateException` 映射为稳定 HTTP 409 `publication_gate_blocked`，返回 gate code、target 和 gate，不写入公开状态。
+- 后台单条/批量入口复用统一 transition owner；无项目 legacy 后台在系统尚无项目时保持兼容，项目存在后 operator 必须具备明确项目上下文。
+- 验证：API 风险工作流通过；后台文章风险及页面回归 20 tests、145 assertions 通过。
+
 **目标**
 
 - 将 API 和后台文章创建、更新、审核、发布、撤回及单条/批量状态操作全部接入统一 gate 与状态 owner。
@@ -101,6 +128,13 @@
 
 ### 3E：分发与人工发布的外部副作用边界
 
+**执行状态：已完成（2026-08-23）**
+
+- `DistributionOrchestrator` 在非删除分发入队、队列发送、站点内容刷新前重新读取项目 gate；后台 retry 也在 dispatch 前拒绝 `platform_approval`，删除动作仍可执行，legacy 保持旧语义。
+- `ManualPublicationService` 创建关联项目文章的人工发布记录前阻断 `platform_approval`，控制器返回稳定 `publication_gate_blocked` 错误；不会创建本地工单或触发远端副作用。
+- `ProcessArticleDistributionJob` 将门闸拒绝记录为 `failed` / `publication_gate_blocked` 终态，不进入自动 retry；日志仅包含稳定错误字段，不写入正文或凭据。
+- 验证：`ManualPublicationServiceTest` 与 `DistributionArticleRiskWorkflowTest` 共 21 tests、70 assertions 通过；Worker/分发回归共 24 tests、91 assertions 通过。
+
 **目标**
 
 - 把 `DistributionOrchestrator`、分发 Job、`ManualPublication` 及人工发布控制器的外部副作用纳入同一 gate。
@@ -120,6 +154,15 @@
 - 重复 dispatch、重试和并发调用不会重复创建可观察的外部副作用；敏感配置和正文不写入日志。
 
 ### 3F：全入口状态矩阵、legacy 回归与幂等闭环
+
+**执行状态：已完成（阶段 3 范围，2026-08-23）**
+
+- 汇总 3A-3E 的 gate、API/admin、Worker、分发和人工发布证据；未新增 publication batch、客户入口或项目官网。
+- 聚焦回归、`git diff --check` 和改动 PHP Docker lint 通过；分发入队、发送前、刷新和 retry 旁路均已重新检查 gate。
+- 人工发布工单在创建和 `completed` 外部成功确认两个边界重新读取项目 gate，项目在工单生命周期中切换为 `platform_approval` 时也不会形成成功事实。
+- 阶段 3 范围综合回归为 112 passed、629 assertions；其中 3 个文章页面断言失败均为阶段 2 已存在的项目上下文/全局后台权限契约，归类为 `EXPOSED_PREEXISTING`，不是阶段 3 引入的回归。
+- 完整 `docker compose run --rm app php artisan test` 结果为 1261 passed、1 skipped、145 failed；失败同样集中在阶段 2 已明确保留为超级管理员专属的全局后台页面及旧测试未提供项目上下文的文章资产上传路径，不通过放宽阶段 2 权限来伪造 3F 全绿证据。
+- 未执行真实第三方远端写操作；生产凭据和外部平台人工确认仍属于上线前人工操作。
 
 **目标**
 

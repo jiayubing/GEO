@@ -53,6 +53,12 @@ return [
             'open_update_center' => 'Update center',
         ],
     ],
+    'project_context' => [
+        'label' => 'Project',
+        'placeholder' => 'Select project',
+        'loading' => 'Loading projects…',
+        'switch_error' => 'Project switch failed. Please refresh and try again.',
+    ],
     'system_updates' => [
         'page_title' => 'System Update Center',
         'page_subtitle' => 'Check upstream releases, generate a safe update plan, and create local backups before applying changes.',

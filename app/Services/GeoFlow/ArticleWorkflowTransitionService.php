@@ -3,7 +3,10 @@
 namespace App\Services\GeoFlow;
 
 use App\Exceptions\ArticleRiskGateException;
+use App\Exceptions\PublicationGateException;
 use App\Models\Article;
+use App\Models\ClientProject;
+use App\Support\GeoFlow\PublicationGateContract;
 use Illuminate\Support\Facades\DB;
 
 class ArticleWorkflowTransitionService
@@ -24,6 +27,8 @@ class ArticleWorkflowTransitionService
         bool $allowExistingOverride = true,
         ?array $rejectedWorkflowState = null,
         ?callable $lockedGuard = null,
+        string $publicationTarget = PublicationGateContract::TARGET_LOCAL,
+        bool $platformApproved = false,
     ): Article {
         $result = DB::transaction(function () use (
             $article,
@@ -34,6 +39,8 @@ class ArticleWorkflowTransitionService
             $allowExistingOverride,
             $rejectedWorkflowState,
             $lockedGuard,
+            $publicationTarget,
+            $platformApproved,
         ): Article|ArticleRiskGateException {
             $lockedArticle = Article::query()
                 ->whereKey($article->getKey())
@@ -42,6 +49,26 @@ class ArticleWorkflowTransitionService
 
             if ($lockedGuard !== null) {
                 $lockedGuard($lockedArticle);
+            }
+
+            if ($workflowState['status'] === 'published' && (string) $lockedArticle->status !== 'published') {
+                $project = $lockedArticle->client_project_id !== null
+                    ? ClientProject::query()->find($lockedArticle->client_project_id)
+                    : null;
+
+                // Articles without a project are the pre-project legacy surface.
+                if ($project instanceof ClientProject) {
+                    $gate = PublicationGateContract::evaluate(
+                        $project,
+                        (string) ($lockedArticle->status ?? 'draft'),
+                        (string) ($workflowState['review_status'] ?? 'pending'),
+                        $publicationTarget,
+                        $platformApproved,
+                    );
+                    if (! $gate['allowed']) {
+                        throw new PublicationGateException($gate['code'], $publicationTarget, $gate['gate']);
+                    }
+                }
             }
 
             try {

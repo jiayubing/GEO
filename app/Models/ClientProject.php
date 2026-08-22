@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\ClientProjectStatus;
+use App\Enums\PublicationGate;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -10,13 +11,31 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ClientProject extends Model
 {
-    protected $fillable = ['client_id', 'name', 'slug', 'status', 'is_legacy', 'created_by_admin_id', 'updated_by_admin_id'];
+    protected $attributes = [
+        'status' => 'active',
+        'publication_gate' => 'platform_approval',
+    ];
+
+    protected $fillable = ['client_id', 'name', 'slug', 'status', 'is_legacy', 'publication_gate', 'created_by_admin_id', 'updated_by_admin_id'];
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $project): void {
+            if ($project->status === null) {
+                $project->status = ClientProjectStatus::ACTIVE;
+            }
+            if ($project->publication_gate === null) {
+                $project->publication_gate = PublicationGate::PLATFORM_APPROVAL;
+            }
+        });
+    }
 
     protected function casts(): array
     {
         return [
             'status' => ClientProjectStatus::class,
             'is_legacy' => 'boolean',
+            'publication_gate' => PublicationGate::class,
             'client_id' => 'integer',
             'created_by_admin_id' => 'integer',
             'updated_by_admin_id' => 'integer',

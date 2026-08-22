@@ -8,11 +8,14 @@ use App\Models\Article;
 use App\Models\ArticleDistribution;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\ClientProject;
 use App\Models\DistributionChannel;
 use App\Models\DistributionChannelSecret;
 use App\Models\SensitiveWord;
 use App\Models\Task;
 use App\Services\GeoFlow\DistributionOrchestrator;
+use App\Services\GeoFlow\DistributionRetryPolicy;
 use App\Support\GeoFlow\ApiKeyCrypto;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -181,6 +184,70 @@ class DistributionArticleRiskWorkflowTest extends TestCase
 
         $this->assertSame('synced', $distribution->fresh()->status);
         Http::assertSentCount(1);
+    }
+
+    public function test_platform_approval_gate_is_rechecked_before_distribution_send(): void
+    {
+        [$article, , $channel] = $this->createDistributionArticle('Approval-gated content.');
+        $client = Client::query()->create([
+            'name' => 'Approval gated client',
+            'slug' => 'approval-gated-client',
+            'is_legacy' => false,
+        ]);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->id,
+            'name' => 'Approval gated project',
+            'slug' => 'approval-gated-project',
+            'is_legacy' => false,
+        ]);
+        $article->update(['client_project_id' => $project->id]);
+        $distribution = ArticleDistribution::query()->create([
+            'article_id' => $article->id,
+            'distribution_channel_id' => $channel->id,
+            'action' => 'publish',
+            'status' => 'queued',
+            'idempotency_key' => 'approval-gated-distribution',
+        ]);
+        Http::fake();
+
+        try {
+            app(DistributionOrchestrator::class)->process($distribution);
+            $this->fail('Expected the publication gate to reject the queued distribution.');
+        } catch (\App\Exceptions\PublicationGateException $exception) {
+            $this->assertSame('platform_approval_required', $exception->gateCode);
+        }
+
+        Http::assertNothingSent();
+        $this->assertSame('queued', $distribution->fresh()->status);
+    }
+
+    public function test_platform_gate_failure_is_terminal_and_not_retried_by_distribution_job(): void
+    {
+        [$article, , $channel] = $this->createDistributionArticle('Terminal gate failure.');
+        $client = Client::query()->create(['name' => 'Terminal client', 'slug' => 'terminal-client', 'is_legacy' => false]);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->id,
+            'name' => 'Terminal project',
+            'slug' => 'terminal-project',
+            'is_legacy' => false,
+        ]);
+        $article->update(['client_project_id' => $project->id]);
+        $distribution = ArticleDistribution::query()->create([
+            'article_id' => $article->id,
+            'distribution_channel_id' => $channel->id,
+            'action' => 'publish',
+            'status' => 'queued',
+            'idempotency_key' => 'terminal-gate-distribution',
+        ]);
+
+        (new ProcessArticleDistributionJob((int) $distribution->id))
+            ->handle(app(DistributionOrchestrator::class), app(DistributionRetryPolicy::class));
+
+        $distribution->refresh();
+        $this->assertSame('failed', $distribution->status);
+        $this->assertSame('publication_gate_blocked: platform_approval_required', $distribution->last_error_message);
+        $this->assertNull($distribution->next_retry_at);
+        Queue::assertNothingPushed();
     }
 
     public function test_distribution_send_holds_a_channel_operation_lease_until_the_result_is_saved(): void

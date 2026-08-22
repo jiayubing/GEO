@@ -29,7 +29,7 @@ class ClientProjectDomainSchemaTest extends TestCase
         $this->assertTrue(Schema::hasTable('client_projects'));
         $this->assertTrue(Schema::hasTable('client_project_members'));
         $this->assertTrue(Schema::hasColumns('clients', ['slug', 'status', 'created_by_admin_id', 'updated_by_admin_id']));
-        $this->assertTrue(Schema::hasColumns('client_projects', ['client_id', 'slug', 'status', 'created_by_admin_id', 'updated_by_admin_id']));
+        $this->assertTrue(Schema::hasColumns('client_projects', ['client_id', 'slug', 'status', 'publication_gate', 'created_by_admin_id', 'updated_by_admin_id']));
         $this->assertTrue(Schema::hasColumns('client_project_members', ['client_project_id', 'admin_id', 'role', 'status', 'revoked_at']));
     }
 
@@ -42,6 +42,7 @@ class ClientProjectDomainSchemaTest extends TestCase
 
         $this->assertSame(ClientStatus::ACTIVE, $client->fresh()->status);
         $this->assertSame(ClientProjectStatus::ACTIVE, $project->fresh()->status);
+        $this->assertSame(\App\Enums\PublicationGate::PLATFORM_APPROVAL, $project->fresh()->publication_gate);
         $this->assertSame(ClientProjectMemberRole::OPERATOR, $member->fresh()->role);
         $this->assertSame(ClientProjectMemberStatus::ACTIVE, $member->fresh()->status);
         $this->assertTrue($member->project->is($project));
@@ -103,6 +104,7 @@ class ClientProjectDomainSchemaTest extends TestCase
         $this->assertSame(1, Client::query()->where('is_legacy', true)->count());
         $this->assertSame(1, ClientProject::query()->where('is_legacy', true)->count());
         $this->assertSame(0, $second['owner_counts_assigned']['categories']);
+        $this->assertSame(\App\Enums\PublicationGate::LEGACY_AUTO, ClientProject::query()->where('is_legacy', true)->firstOrFail()->publication_gate);
     }
 
     private function createAdmin(): Admin

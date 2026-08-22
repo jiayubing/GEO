@@ -175,6 +175,7 @@ final class LegacyProjectBackfillService
                 'name' => 'Legacy',
                 'slug' => 'legacy',
                 'is_legacy' => true,
+                'publication_gate' => 'legacy_auto',
             ]);
         } elseif (! $client->is_legacy) {
             throw new RuntimeException('The reserved legacy client slug is already used by a non-legacy client.');
@@ -191,9 +192,12 @@ final class LegacyProjectBackfillService
                 'name' => 'Legacy',
                 'slug' => 'legacy',
                 'is_legacy' => true,
+                'publication_gate' => 'legacy_auto',
             ]);
         } elseif (! $project->is_legacy) {
             throw new RuntimeException('The reserved legacy project slug is already used by a non-legacy project.');
+        } elseif ($project->publication_gate?->value !== 'legacy_auto') {
+            $project->forceFill(['publication_gate' => 'legacy_auto'])->save();
         }
 
         return [$client, $project];

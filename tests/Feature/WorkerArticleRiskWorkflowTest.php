@@ -6,6 +6,9 @@ use App\Models\Admin;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\ClientProject;
+use App\Enums\PublicationGate;
 use App\Models\SensitiveWord;
 use App\Models\Task;
 use App\Services\GeoFlow\ArticleRiskGate;
@@ -105,12 +108,53 @@ class WorkerArticleRiskWorkflowTest extends TestCase
         $this->assertSame(0, (int) $task->fresh()->published_count);
     }
 
+    public function test_platform_approval_project_stays_draft_and_does_not_publish(): void
+    {
+        $client = Client::query()->create(['name' => 'Approval client', 'slug' => 'approval-client']);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->id,
+            'name' => 'Approval project',
+            'slug' => 'approval-project',
+            'publication_gate' => PublicationGate::PLATFORM_APPROVAL,
+        ]);
+        [$task, $article] = $this->createTaskArticle(['client_project_id' => $project->id]);
+
+        $result = $this->publishDueDraft($task, $project);
+
+        $this->assertSame('await_platform_approval', $result['meta']['action'] ?? null);
+        $article->refresh();
+        $this->assertSame('draft', $article->status);
+        $this->assertSame('approved', $article->review_status);
+        $this->assertSame(0, (int) $task->fresh()->published_count);
+    }
+
+    public function test_legacy_project_keeps_worker_auto_publish_behavior(): void
+    {
+        $client = Client::query()->create(['name' => 'Legacy client', 'slug' => 'legacy-client']);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->id,
+            'name' => 'Legacy project',
+            'slug' => 'legacy-project',
+            'is_legacy' => true,
+            'publication_gate' => PublicationGate::LEGACY_AUTO,
+        ]);
+        [$task, $article] = $this->createTaskArticle(['client_project_id' => $project->id]);
+
+        $result = $this->publishDueDraft($task, $project);
+
+        $this->assertSame((int) $article->id, $result['article_id'] ?? null);
+        $article->refresh();
+        $this->assertSame('published', $article->status);
+        $this->assertSame(1, (int) $task->fresh()->published_count);
+    }
+
     /**
      * @param  array<string, mixed>  $articleOverrides
      * @return array{Task, Article}
      */
     private function createTaskArticle(array $articleOverrides = []): array
     {
+        $clientProjectId = $articleOverrides['client_project_id'] ?? null;
         $task = Task::query()->create([
             'name' => 'Risk worker task',
             'status' => 'active',
@@ -118,6 +162,7 @@ class WorkerArticleRiskWorkflowTest extends TestCase
             'publish_interval' => 3600,
             'publish_scope' => 'local_and_distribution',
             'next_publish_at' => now()->subMinute(),
+            'client_project_id' => $clientProjectId,
         ]);
         $category = Category::query()->create([
             'name' => 'Worker risk',
@@ -144,11 +189,11 @@ class WorkerArticleRiskWorkflowTest extends TestCase
     }
 
     /** @return array<string, mixed>|null */
-    private function publishDueDraft(Task $task): ?array
+    private function publishDueDraft(Task $task, ?ClientProject $project = null): ?array
     {
         $service = app(WorkerExecutionService::class);
         $method = new ReflectionMethod($service, 'publishDueDraftArticle');
 
-        return $method->invoke($service, $task);
+        return $method->invoke($service, $task, $project);
     }
 }

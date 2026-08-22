@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Exceptions\ArticleRiskGateException;
+use App\Exceptions\PublicationGateException;
 use App\Http\Controllers\Controller;
 use App\Models\Admin;
 use App\Models\AiModel;
@@ -322,6 +323,11 @@ class ArticleController extends Controller
                 ->route('admin.articles.edit', ['articleId' => (int) $article?->id])
                 ->withInput()
                 ->withErrors($e->getMessage());
+        } catch (PublicationGateException $e) {
+            return redirect()
+                ->route('admin.articles.edit', ['articleId' => (int) $article?->id])
+                ->withInput()
+                ->withErrors('publication_gate_blocked: '.$e->gateCode);
         } catch (Throwable $e) {
             return back()->withInput()->withErrors(__('admin.article_create.error.create_exception', ['message' => $e->getMessage()]));
         }
@@ -510,6 +516,11 @@ class ArticleController extends Controller
                 ->route('admin.articles.edit', ['articleId' => $articleId])
                 ->withInput()
                 ->withErrors($e->getMessage());
+        } catch (PublicationGateException $e) {
+            return redirect()
+                ->route('admin.articles.edit', ['articleId' => $articleId])
+                ->withInput()
+                ->withErrors('publication_gate_blocked: '.$e->gateCode);
         } catch (Throwable $e) {
             return back()->withInput()->withErrors(__('admin.article_edit.error.update_exception', ['message' => $e->getMessage()]));
         }
@@ -1071,7 +1082,7 @@ class ArticleController extends Controller
                         'published_at' => $workflowState['published_at'],
                     ]);
                 }
-            } catch (ArticleRiskGateException) {
+            } catch (ArticleRiskGateException|PublicationGateException) {
                 $rejectedCount++;
 
                 continue;
@@ -1142,7 +1153,7 @@ class ArticleController extends Controller
                         'published_at' => $workflowState['published_at'],
                     ]);
                 }
-            } catch (ArticleRiskGateException) {
+            } catch (ArticleRiskGateException|PublicationGateException) {
                 $rejectedCount++;
 
                 continue;

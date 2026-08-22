@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Models\Admin;
+use App\Models\ClientProject;
 use App\Services\GeoFlow\ProjectAccessService;
 use Closure;
 use Illuminate\Http\Request;
@@ -27,7 +28,13 @@ final class EnsureProjectScopedSurface
         if (! $admin->isSuperAdmin()) {
             $projectSurface = $request->routeIs('admin.articles.*')
                 || $request->routeIs('admin.tasks.*');
-            if (! $projectSurface || $project === null) {
+            // Keep the pre-project admin surface usable during migration. Once any
+            // project exists, operators must provide an explicit project context.
+            $legacySurface = $project === null
+                && ! ClientProject::query()->exists()
+                && $request->routeIs('admin.articles.*');
+
+            if (! $projectSurface || ($project === null && ! $legacySurface)) {
                 abort(403, 'project_scoped_surface_unavailable');
             }
         }

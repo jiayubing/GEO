@@ -3,10 +3,13 @@
 namespace Tests\Feature;
 
 use App\Exceptions\ManualPublicationConflictException;
+use App\Exceptions\PublicationGateException;
 use App\Models\Admin;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\ClientProject;
 use App\Models\ManualPublication;
 use App\Models\ManualPublicationAccount;
 use App\Models\ManualPublicationPersona;
@@ -85,6 +88,31 @@ class ManualPublicationServiceTest extends TestCase
         ]), $admin);
     }
 
+    public function test_post_creation_does_not_create_record_when_project_requires_platform_approval(): void
+    {
+        $admin = $this->admin('super_admin');
+        [$persona, $account] = $this->identity($admin);
+        $client = Client::query()->create(['name' => 'Gate client', 'slug' => 'gate-client']);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->getKey(),
+            'name' => 'Approval project',
+            'slug' => 'approval-project',
+            'publication_gate' => 'platform_approval',
+        ]);
+        $article = $this->article('approved');
+        $article->update(['client_project_id' => $project->getKey()]);
+        $service = app(ManualPublicationService::class);
+
+        $this->expectException(PublicationGateException::class);
+        try {
+            $service->create($this->payload($persona, $account, $admin, [
+                'article_id' => $article->getKey(),
+            ]), $admin);
+        } finally {
+            $this->assertSame(0, ManualPublication::query()->count());
+        }
+    }
+
     public function test_state_transitions_require_current_revision_and_completion_url(): void
     {
         $admin = $this->admin('super_admin');
@@ -127,6 +155,43 @@ class ManualPublicationServiceTest extends TestCase
         $this->assertSame('https://example.com/published/1', $publication->completion_url);
         $this->assertNotNull($publication->completed_at);
         $this->assertSame(4, $publication->revision);
+    }
+
+    public function test_completion_rechecks_project_gate_before_recording_external_success(): void
+    {
+        $admin = $this->admin('super_admin');
+        [$persona, $account] = $this->identity($admin);
+        $article = $this->article('approved');
+        $service = app(ManualPublicationService::class);
+        $publication = $service->create($this->payload($persona, $account, $admin, [
+            'article_id' => $article->getKey(),
+        ]), $admin);
+        $publication = $service->transition($publication, ManualPublication::STATUS_READY, 1, $admin);
+        $publication = $service->transition($publication, ManualPublication::STATUS_IN_PROGRESS, 2, $admin);
+
+        $client = Client::query()->create(['name' => 'Late gate client', 'slug' => 'late-gate-client']);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->getKey(),
+            'name' => 'Late approval project',
+            'slug' => 'late-approval-project',
+            'publication_gate' => 'platform_approval',
+        ]);
+        $article->update(['client_project_id' => $project->getKey()]);
+
+        try {
+            $service->transition(
+                $publication,
+                ManualPublication::STATUS_COMPLETED,
+                3,
+                $admin,
+                'https://example.com/published/late-gate',
+                '平台结果待确认',
+            );
+            $this->fail('Expected platform approval to block completion.');
+        } catch (PublicationGateException $exception) {
+            $this->assertSame('platform_approval_required', $exception->gateCode);
+            $this->assertSame(ManualPublication::STATUS_IN_PROGRESS, $publication->refresh()->status);
+        }
     }
 
     public function test_transition_rechecks_assignee_after_locking_current_revision(): void

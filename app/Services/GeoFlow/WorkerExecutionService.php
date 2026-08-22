@@ -3,6 +3,7 @@
 namespace App\Services\GeoFlow;
 
 use App\Exceptions\ArticleRiskGateException;
+use App\Enums\PublicationGate;
 use App\Models\AiModel;
 use App\Models\Article;
 use App\Models\ArticleImage;
@@ -73,6 +74,9 @@ class WorkerExecutionService
 
         $publishResult = $this->publishDueDraftArticle($task, $project);
         if ($publishResult !== null) {
+            if (($publishResult['meta']['action'] ?? null) !== 'publish_draft') {
+                return $publishResult;
+            }
             $this->distributionOrchestrator->enqueueForArticle((int) $publishResult['article_id']);
 
             return $publishResult;
@@ -256,6 +260,25 @@ class WorkerExecutionService
                 ->first(['id', 'title', 'review_status']);
             if (! $article) {
                 return null;
+            }
+
+            // New projects require an explicit platform approval. Worker retries
+            // must re-read this gate at execution time and leave the article in
+            // its approved draft state until an operator grants publication.
+            $freshProject = $project instanceof ClientProject
+                ? ClientProject::query()->whereKey((int) $freshTask->client_project_id)->first(['id', 'status', 'publication_gate'])
+                : null;
+            if ($freshProject instanceof ClientProject && $freshProject->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
+                return [
+                    'article_id' => (int) $article->id,
+                    'title' => (string) $article->title,
+                    'message' => '草稿已审核，等待平台审批',
+                    'meta' => [
+                        'task_id' => (int) $freshTask->id,
+                        'action' => 'await_platform_approval',
+                        'publication_gate' => PublicationGate::PLATFORM_APPROVAL->value,
+                    ],
+                ];
             }
 
             $publishScope = (string) ($freshTask->publish_scope ?? 'local_and_distribution');

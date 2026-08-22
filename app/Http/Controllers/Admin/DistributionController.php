@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Exceptions\DistributionChannelDeletionBlocked;
+use App\Enums\PublicationGate;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\DeleteDistributionChannelRequest;
 use App\Jobs\ProcessArticleDistributionJob;
@@ -688,10 +689,14 @@ class DistributionController extends Controller
     {
         $candidate = ArticleDistribution::query()
             ->select(['id', 'distribution_channel_id'])
+            ->with('article:id,client_project_id')
             ->whereKey($distributionId)
             ->first();
         if (! $candidate) {
             return back()->withErrors(__('admin.distribution.message.job_not_found'));
+        }
+        if ($candidate->article?->loadMissing('clientProject:id,publication_gate')->clientProject?->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
+            return back()->withErrors('publication_gate_blocked: platform_approval_required');
         }
 
         $result = DB::transaction(function () use ($candidate): string {

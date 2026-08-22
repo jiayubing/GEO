@@ -3,6 +3,8 @@
 namespace App\Services\GeoFlow;
 
 use App\Exceptions\ManualPublicationConflictException;
+use App\Enums\PublicationGate;
+use App\Exceptions\PublicationGateException;
 use App\Models\Admin;
 use App\Models\Article;
 use App\Models\ManualPublication;
@@ -28,6 +30,17 @@ class ManualPublicationService
     {
         return DB::transaction(function () use ($data, $creator): ManualPublication {
             $prepared = $this->prepare($data);
+            $article = $prepared['article_id'] ?? null;
+            if ($article !== null) {
+                $articleModel = Article::query()->with('clientProject')->find((int) $article);
+                if ($articleModel?->clientProject?->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
+                    throw new PublicationGateException(
+                        'platform_approval_required',
+                        'manual',
+                        PublicationGate::PLATFORM_APPROVAL->value,
+                    );
+                }
+            }
             $prepared['created_by_admin_id'] = $creator->getKey();
             $initialStatus = (string) ($data['status'] ?? ManualPublication::STATUS_DRAFT);
             if (! in_array($initialStatus, [ManualPublication::STATUS_DRAFT, ManualPublication::STATUS_READY], true)) {
@@ -118,6 +131,16 @@ class ManualPublicationService
             }
 
             if ($targetStatus === ManualPublication::STATUS_COMPLETED) {
+                if ($current->article_id !== null) {
+                    $article = Article::query()->with('clientProject')->find((int) $current->article_id);
+                    if ($article?->clientProject?->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
+                        throw new PublicationGateException(
+                            'platform_approval_required',
+                            'manual',
+                            PublicationGate::PLATFORM_APPROVAL->value,
+                        );
+                    }
+                }
                 $completionUrl = trim((string) $completionUrl);
                 if (! $this->isHttpUrl($completionUrl)) {
                     throw new DomainException((string) __('admin.manual_publications.error.completion_url_required'));

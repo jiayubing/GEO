@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\PublicationGateException;
 use App\Models\ArticleDistribution;
 use App\Models\DistributionChannel;
 use App\Services\GeoFlow\DistributionOrchestrator;
@@ -49,10 +50,12 @@ class ProcessArticleDistributionJob implements ShouldQueue
             }
 
             $distribution->forceFill([
-                'status' => $shouldRetry ? 'queued' : 'failed',
-                'last_error_message' => mb_substr($e->getMessage(), 0, 1000),
+                'status' => $e instanceof PublicationGateException ? 'failed' : ($shouldRetry ? 'queued' : 'failed'),
+                'last_error_message' => $e instanceof PublicationGateException
+                    ? 'publication_gate_blocked: '.$e->gateCode
+                    : mb_substr($e->getMessage(), 0, 1000),
                 'last_attempt_at' => now(),
-                'next_retry_at' => $retryAt,
+                'next_retry_at' => $e instanceof PublicationGateException ? null : $retryAt,
             ])->save();
 
             $orchestrator->log(
@@ -61,10 +64,12 @@ class ProcessArticleDistributionJob implements ShouldQueue
                 $distribution->distribution_channel_id,
                 $distribution->id,
                 $distribution->article_id,
-                ['event' => $shouldRetry ? 'distribution.retry_scheduled' : 'distribution.failed']
+                ['event' => $e instanceof PublicationGateException
+                    ? 'distribution.publication_gate_blocked'
+                    : ($shouldRetry ? 'distribution.retry_scheduled' : 'distribution.failed')]
             );
 
-            if ($shouldRetry) {
+            if ($shouldRetry && ! $e instanceof PublicationGateException) {
                 self::dispatch((int) $distribution->id)
                     ->onQueue('distribution')
                     ->delay($retryAt);

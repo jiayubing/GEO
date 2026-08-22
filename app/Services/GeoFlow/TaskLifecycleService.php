@@ -268,7 +268,7 @@ class TaskLifecycleService
     public function startTask(int $taskId, bool $enqueueNow = false, ?ClientProject $project = null): array
     {
         $this->ensureTaskExists($taskId, $project);
-        $jobId = DB::transaction(function () use ($taskId, $enqueueNow): ?int {
+        $jobId = DB::transaction(function () use ($taskId, $enqueueNow, $project): ?int {
             // 手动“立即执行”场景下，不把 next_run_at 强行置为 now，
             // 避免与手动入队叠加导致一次点击触发两次执行。
             $this->activateTask($taskId, ! $enqueueNow, $project);
@@ -308,7 +308,7 @@ class TaskLifecycleService
     public function stopTask(int $taskId, ?ClientProject $project = null): array
     {
         $this->ensureTaskExists($taskId, $project);
-        [$cancelledJobs, $runningJobs] = DB::transaction(function () use ($taskId): array {
+        [$cancelledJobs, $runningJobs] = DB::transaction(function () use ($taskId, $project): array {
             $cancelledJobs = $this->pauseTask($taskId, '任务已暂停', $project);
             $runningJobs = TaskRun::query()
                 ->where('task_id', $taskId)

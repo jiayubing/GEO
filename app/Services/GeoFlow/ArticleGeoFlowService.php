@@ -4,6 +4,7 @@ namespace App\Services\GeoFlow;
 
 use App\Exceptions\ApiException;
 use App\Exceptions\ArticleRiskGateException;
+use App\Exceptions\PublicationGateException;
 use App\Models\Article;
 use App\Models\ArticleImage;
 use App\Models\ArticleReview;
@@ -126,6 +127,8 @@ class ArticleGeoFlowService
                     );
                 } catch (ArticleRiskGateException $exception) {
                     $gateRejection = $exception;
+                } catch (PublicationGateException $exception) {
+                    throw $this->publicationBlockedException($exception);
                 }
             }
 
@@ -220,7 +223,7 @@ class ArticleGeoFlowService
         $normalized['updated_at'] = now();
 
         if ($hasRiskRelevantChanges) {
-            DB::transaction(function () use ($articleId, $normalized, $auditAdminId): void {
+            DB::transaction(function () use ($articleId, $normalized, $auditAdminId, $project): void {
                 $this->scopedArticleQuery($project)->whereKey($articleId)->update($normalized);
                 $article = $this->scopedArticleQuery($project)->findOrFail($articleId);
                 $this->articleRiskScanner->record($article, 'api_save', $auditAdminId);
@@ -298,6 +301,8 @@ class ArticleGeoFlowService
                     );
                 } catch (ArticleRiskGateException $exception) {
                     return $exception;
+                } catch (PublicationGateException $exception) {
+                    throw $this->publicationBlockedException($exception);
                 }
 
                 ArticleReview::query()->create([
@@ -363,6 +368,8 @@ class ArticleGeoFlowService
             );
         } catch (ArticleRiskGateException $exception) {
             throw $this->riskBlockedException($this->scopedArticleQuery($project)->findOrFail($articleId), $exception);
+        } catch (PublicationGateException $exception) {
+            throw $this->publicationBlockedException($exception);
         }
 
         return $this->getArticle($articleId, $project);
@@ -630,6 +637,15 @@ class ArticleGeoFlowService
             'risk_status' => $exception->riskStatus,
             'match_count' => (int) $exception->scan->match_count,
             'matches' => $exception->scan->matches ?? [],
+        ]);
+    }
+
+    private function publicationBlockedException(PublicationGateException $exception): ApiException
+    {
+        return new ApiException('publication_gate_blocked', '文章尚未获得平台公开许可', 409, [
+            'gate_code' => $exception->gateCode,
+            'target' => $exception->target,
+            'gate' => $exception->gate,
         ]);
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Exceptions\ManualPublicationConflictException;
+use App\Exceptions\PublicationGateException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\StoreManualPublicationRequest;
 use App\Http\Requests\Admin\TransitionManualPublicationRequest;
@@ -76,6 +77,8 @@ class ManualPublicationController extends Controller
     {
         try {
             $publication = $this->service->create($request->validated(), $this->admin($request));
+        } catch (PublicationGateException $exception) {
+            return back()->withInput()->withErrors('publication_gate_blocked: '.$exception->gateCode);
         } catch (DomainException $exception) {
             return back()->withInput()->withErrors($exception->getMessage());
         } catch (Throwable $exception) {
