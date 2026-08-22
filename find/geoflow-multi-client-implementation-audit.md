@@ -224,6 +224,8 @@ publication_gate = legacy_auto | platform_approval
 
 ### 阶段 2：知识库 → 任务 → 文章的真实隔离
 
+本阶段已拆为独立执行计划：[geoflow-multi-client-phase-2-execution.md](D:/GEOFlow-2.3.0/find/geoflow-multi-client-phase-2-execution.md)。执行顺序为 `2A` 项目资源解析与同项目引用 → `2B` 任务生命周期 → `2C` Worker 生成 → `2D` 队列 Job/TaskRun → `2E` 文章 Service/API/admin → `2F` 列表、监控、统计和并发幂等闭环。
+
 **目标**
 
 - 用一条最小资源链证明项目归属会从知识库/任务传递到生成文章，并在队列重试、并发和重启后保持不变。
@@ -363,7 +365,7 @@ item : pending → approved → publishing → local_published / remote_synced /
 | --- | --- | --- | --- |
 | 0 | 拆成 0A–0C 三个只读工作包 | `0A` 版本/Schema 盘点；`0B` invariant report；`0C` 渠道独占或共享决策 | 中；只读，不修改业务数据；0C 未决不能开始渠道归属实现 |
 | 1 | 拆成 1A–1F | `1A` 项目/成员 Schema；`1B` owner 字段与渠道 membership；`1C` legacy carrier 与幂等回填；`1D` 项目上下文与成员授权；`1E` 内部 token 绑定；`1F` AI usage observation | 很高；1A/1B 未验证前不回填，1C 未验证前不切换运营流程，1D/1E 未验证前不开项目写接口；1F 不改变平台 quota |
-| 2 | 拆成 2A–2D | `2A` owner 与跨资源关系；`2B` Service/Job 项目继承；`2C` 后台/API/统计过滤；`2D` 并发、重试、幂等 | 高；必须先闭合知识库→任务→文章链路，再扩展页面和统计 |
+| 2 | 拆成 2A–2F | `2A` 项目资源解析与同项目引用；`2B` 任务生命周期；`2C` Worker 生成链路；`2D` 队列 Job/TaskRun/恢复；`2E` 文章 Service/API/admin；`2F` 列表、监控、统计和并发幂等 | 高；先闭合同项目资源不变量，再分别接入任务、Worker、文章和队列，最后做全链路查询与并发回归；publication gate、批次和客户入口不得混入 |
 | 3 | 拆成 3A–3C | `3A` gate 合同和状态矩阵；`3B` Worker/API/后台/CLI/调度接入；`3C` 幂等与失败分类回归 | 高；必须覆盖所有公开发布入口，不能只修 Worker |
 | 4 | 拆成 4A–4D，是风险最高阶段 | `4A` batch/item Schema 与状态机；`4B` 提交/退回/批准；`4C` local 目标发布；`4D` channel 与 manual 工单、readback/reconcile | 很高；4C 通过才做本站受控试点，4D 通过前不走真实远程批量发布 |
 | 5 | 拆成 5A–5C | `5A` Enterprise Knowledge；`5B` URL Import；`5C` 中央站/项目站查询和 slug 合同 | 高；每个工作包都要完成跨项目拒绝和公开前台过滤验证 |
@@ -387,7 +389,7 @@ item : pending → approved → publishing → local_published / remote_synced /
 ```text
 阶段 0：完成版本、数据不变量和渠道模型决策
 阶段 1：按 `1A–1F` 完成项目基础、legacy 回填、授权合同和用量事件
-阶段 2：完成知识库→任务→文章的真实隔离及队列验证
+阶段 2：按 `2A–2F` 完成知识库→任务→文章的真实隔离及队列验证
 阶段 6A：验证运营人员继续使用现有资料后台流程
 阶段 3：封闭全部公开发布入口的项目门闸
 阶段 4A–4C：完成本站发布批次闭环；通过后才做受控本站试点

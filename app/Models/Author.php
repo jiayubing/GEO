@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Author extends Model
 {
@@ -16,11 +17,17 @@ class Author extends Model
         'avatar',
         'website',
         'social_links',
+        'client_project_id',
     ];
 
     public function articles(): HasMany
     {
         return $this->hasMany(Article::class, 'author_id');
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 
     public function tasksAsAuthor(): HasMany

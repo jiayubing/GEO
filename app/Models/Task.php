@@ -47,6 +47,7 @@ class Task extends Model
         'last_error_message',
         'schedule_enabled',
         'max_retry_count',
+        'client_project_id',
     ];
 
     protected function casts(): array
@@ -79,12 +80,18 @@ class Task extends Model
             'last_error_at' => 'datetime',
             'schedule_enabled' => 'integer',
             'max_retry_count' => 'integer',
+            'client_project_id' => 'integer',
         ];
     }
 
     public function titleLibrary(): BelongsTo
     {
         return $this->belongsTo(TitleLibrary::class, 'title_library_id');
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 
     public function imageLibrary(): BelongsTo

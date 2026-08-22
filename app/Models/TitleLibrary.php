@@ -20,6 +20,7 @@ class TitleLibrary extends Model
         'prompt_id',
         'generation_rounds',
         'is_ai_generated',
+        'client_project_id',
     ];
 
     protected function casts(): array
@@ -31,12 +32,18 @@ class TitleLibrary extends Model
             'prompt_id' => 'integer',
             'generation_rounds' => 'integer',
             'is_ai_generated' => 'integer',
+            'client_project_id' => 'integer',
         ];
     }
 
     public function keywordLibrary(): BelongsTo
     {
         return $this->belongsTo(KeywordLibrary::class, 'keyword_library_id');
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 
     public function aiModel(): BelongsTo

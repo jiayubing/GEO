@@ -35,6 +35,7 @@ use App\Http\Controllers\Admin\LegacyController;
 use App\Http\Controllers\Admin\ManualPublicationController;
 use App\Http\Controllers\Admin\ManualPublicationSettingsController;
 use App\Http\Controllers\Admin\MaterialsController;
+use App\Http\Controllers\Admin\ProjectContextController;
 use App\Http\Controllers\Admin\SecuritySettingsController;
 use App\Http\Controllers\Admin\SiteSettingsController;
 use App\Http\Controllers\Admin\SiteThemeReplicationController;
@@ -87,8 +88,14 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
             ->name('login.attempt');
     });
 
-    // 后台受保护路由
-    Route::middleware(['admin.auth', 'admin.activity'])->group(function () {
+    // 项目上下文切换入口：只负责选择并重新验证项目，不代表资源页面已完成隔离。
+    Route::middleware(['admin.auth', 'admin.activity'])->prefix('project-context')->name('project-context.')->group(function (): void {
+        Route::get('/', [ProjectContextController::class, 'show'])->name('show');
+        Route::post('switch', [ProjectContextController::class, 'switch'])->name('switch');
+    });
+
+    // 后台受保护路由；阶段 2 完成资源过滤前，普通 operator 暂不开放这些全局页面。
+    Route::middleware(['admin.auth', 'admin.project_surface', 'admin.activity'])->group(function () {
         // 会话与首页
         Route::post('logout', [AdminAuthController::class, 'logout'])->name('logout');
         Route::post('welcome/dismiss', [AdminWelcomeController::class, 'dismiss'])->name('welcome.dismiss');

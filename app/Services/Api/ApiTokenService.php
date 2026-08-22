@@ -4,6 +4,7 @@ namespace App\Services\Api;
 
 use App\Exceptions\ApiException;
 use App\Models\Admin;
+use App\Models\ClientProject;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Laravel\Sanctum\PersonalAccessToken;
@@ -127,7 +128,7 @@ class ApiTokenService
      * @param  list<string>  $scopes
      * @return array{token: string, record: array<string, mixed>}
      */
-    public function createToken(string $name, array $scopes, ?int $adminId, ?string $expiresAt = null): array
+    public function createToken(string $name, array $scopes, ?int $adminId, ?string $expiresAt = null, ?int $clientProjectId = null): array
     {
         $name = trim($name);
         if ($name === '') {
@@ -159,6 +160,12 @@ class ApiTokenService
         if (! $model instanceof PersonalAccessToken) {
             throw new ApiException('token_create_failed', 'Token 创建失败', 500);
         }
+
+        $model->forceFill([
+            'client_project_id' => $clientProjectId,
+            'binding_mode' => $clientProjectId !== null ? 'project' : 'legacy_global',
+        ])->save();
+        $model->refresh();
 
         $record = $this->hydrate($model);
 
@@ -207,6 +214,8 @@ class ApiTokenService
             'expires_at' => $row->expires_at?->format('Y-m-d H:i:s'),
             'created_at' => $row->created_at?->format('Y-m-d H:i:s'),
             'updated_at' => $row->updated_at?->format('Y-m-d H:i:s'),
+            'client_project_id' => $row->client_project_id !== null ? (int) $row->client_project_id : null,
+            'binding_mode' => (string) ($row->binding_mode ?: 'legacy_global'),
         ];
     }
 

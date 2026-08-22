@@ -19,6 +19,7 @@ class EnterpriseKnowledgeProject extends Model
         'ai_model_id',
         'error_message',
         'created_by_admin_id',
+        'client_project_id',
     ];
 
     protected function casts(): array
@@ -27,12 +28,18 @@ class EnterpriseKnowledgeProject extends Model
             'published_knowledge_base_id' => 'integer',
             'ai_model_id' => 'integer',
             'created_by_admin_id' => 'integer',
+            'client_project_id' => 'integer',
         ];
     }
 
     public function sources(): HasMany
     {
         return $this->hasMany(EnterpriseKnowledgeSource::class)->orderBy('sort_order')->orderBy('id');
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 
     public function revisions(): HasMany

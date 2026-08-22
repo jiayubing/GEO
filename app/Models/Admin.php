@@ -119,4 +119,9 @@ class Admin extends Authenticatable
     {
         return $this->hasMany(ArticleReview::class, 'admin_id');
     }
+
+    public function projectMemberships(): HasMany
+    {
+        return $this->hasMany(ClientProjectMember::class, 'admin_id');
+    }
 }

@@ -767,6 +767,18 @@ class DistributionChannel extends Model
             ->withTimestamps();
     }
 
+    public function projectMemberships(): HasMany
+    {
+        return $this->hasMany(ClientProjectDistributionChannel::class, 'distribution_channel_id');
+    }
+
+    public function clientProjects(): BelongsToMany
+    {
+        return $this->belongsToMany(ClientProject::class, 'client_project_distribution_channels')
+            ->withPivot(['status', 'created_by_admin_id', 'revoked_at'])
+            ->withTimestamps();
+    }
+
     public function articleDistributions(): HasMany
     {
         return $this->hasMany(ArticleDistribution::class);

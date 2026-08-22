@@ -82,6 +82,7 @@ class ManualPublication extends Model
         'result_note',
         'completed_at',
         'revision',
+        'client_project_id',
     ];
 
     protected function casts(): array
@@ -100,12 +101,18 @@ class ManualPublication extends Model
             'status_changed_at' => 'datetime',
             'completed_at' => 'datetime',
             'revision' => 'integer',
+            'client_project_id' => 'integer',
         ];
     }
 
     public function article(): BelongsTo
     {
         return $this->belongsTo(Article::class, 'article_id')->withTrashed();
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 
     public function persona(): BelongsTo

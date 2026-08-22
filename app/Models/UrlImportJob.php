@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class UrlImportJob extends Model
 {
@@ -23,6 +24,7 @@ class UrlImportJob extends Model
         'created_by',
         'started_at',
         'finished_at',
+        'client_project_id',
     ];
 
     protected function casts(): array
@@ -31,11 +33,17 @@ class UrlImportJob extends Model
             'progress_percent' => 'integer',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
+            'client_project_id' => 'integer',
         ];
     }
 
     public function logs(): HasMany
     {
         return $this->hasMany(UrlImportJobLog::class, 'job_id');
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 }

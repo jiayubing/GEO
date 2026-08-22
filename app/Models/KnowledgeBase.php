@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class KnowledgeBase extends Model
@@ -39,6 +40,7 @@ class KnowledgeBase extends Model
         'chunk_sync_error',
         'chunk_sync_require_real_embedding',
         'chunk_synced_at',
+        'client_project_id',
     ];
 
     protected function casts(): array
@@ -51,12 +53,18 @@ class KnowledgeBase extends Model
             'effective_date' => 'date',
             'chunk_sync_require_real_embedding' => 'boolean',
             'chunk_synced_at' => 'datetime',
+            'client_project_id' => 'integer',
         ];
     }
 
     public function chunks(): HasMany
     {
         return $this->hasMany(KnowledgeChunk::class, 'knowledge_base_id');
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 
     public function tasks(): HasMany

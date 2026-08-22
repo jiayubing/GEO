@@ -11,4 +11,11 @@ final class ApiAuthContext
         public array $token,
         public int $auditAdminId
     ) {}
+
+    public function projectId(): ?int
+    {
+        $id = $this->token['client_project_id'] ?? null;
+
+        return $id !== null ? (int) $id : null;
+    }
 }

@@ -6,7 +6,49 @@
 >
 > 执行模式：GEOFlow `development` / 迁移、领域基础、授权合同和只读回归
 >
-> 当前状态：计划已拆出，尚未执行阶段 1 的代码、迁移、回填或权限切换
+> 当前状态：1A、1B、1C、1D、1E、1F 已完成代码、迁移与聚焦验证
+
+### 1A 执行记录（2026-08-22）
+
+- 已新增 `clients`、`client_projects`、`client_project_members` 三张基础表，包含状态、审计管理员、时间戳、客户-项目归属和管理员-项目成员唯一性。
+- 已新增四个 backed enum，以及 `Client`、`ClientProject`、`ClientProjectMember` 模型关系；`Admin::projectMemberships()` 仅表达成员关系，不替代 `admins.role`。
+- 已新增 `tests/Unit/ClientProjectDomainSchemaTest.php`，覆盖表/字段合同、enum cast、关系读回和重复成员数据库拒绝。
+- 1A 不写入现有业务数据、不创建 legacy carrier、不开放项目写入口；1C 回填前置仍保持未满足。
+- 验证：`git diff --check` 通过；通过 Docker PHP 8.3 + SQLite 执行 `php artisan test --compact tests/Unit/ClientProjectDomainSchemaTest.php`，3 tests / 14 assertions 通过；通过隔离临时 PostgreSQL 数据库执行完整 `php artisan migrate`，全部 migration（含 1A）通过，并已删除临时数据库。
+
+### 1B 执行记录（2026-08-22）
+
+- 已新增 `client_project_id` nullable owner 字段、外键和索引，覆盖知识库、关键词库、标题库、图片库、任务、文章、作者、分类、Enterprise Knowledge、URL import 和 manual publication 直接 owner 表。
+- 已新增 `client_project_distribution_channels` 授权表，采用阶段 0C 冻结的平台渠道 + 项目 membership 模型；包含 active/revoked 状态、撤销时间、审计管理员、唯一授权和查询索引。
+- 已补充 owner 模型的 `clientProject()` 关系，以及项目/渠道 membership 关系；未复制子表项目字段，未修改渠道 secret。
+- 验证：SQLite 聚焦测试 4 tests / 29 assertions 通过；PostgreSQL 隔离 fresh migration 全部通过；SQLite migration rollback step=1 通过；legacy 回填和业务过滤仍未执行。
+
+### 1C 执行记录（2026-08-22）
+
+- 已新增 `is_legacy` 标记字段，明确区分 legacy 客户与 legacy 项目。
+- 已新增 `LegacyProjectBackfillService` 与 `geoflow:client-project-backfill-legacy` 命令：默认只做 preflight，必须显式 `--apply` 才写入；支持批量更新、异常阻断、稳定 carrier、渠道 membership 推导和 `SystemState` 可读回报告。
+- 回填只补齐 owner 表的 NULL `client_project_id`，不改正文、外部 ID、历史状态或渠道密钥；重复执行不会重复创建 carrier、membership 或覆盖已有项目归属。
+- 验证：SQLite 聚焦测试 5 tests / 39 assertions 通过；命令 help 注册成功；新增 PHP 文件语法检查通过；SQLite fresh + rollback 验证通过。已在当前 `geo_flow` 完成结构迁移、只读 preflight 和授权 `--apply`：preflight `ready`、owner 表均为 0 行、anomalies=0；创建 legacy client/project 各 1 个、channel memberships=0，`SystemState` 报告为 `completed`，三项新 migration 均为 Ran。
+
+### 1D 执行记录（2026-08-22）
+
+- 已新增 `ProjectAccessService`，统一处理 active project、active membership、成员角色、session 项目上下文、显式写入目标和混合项目批量拒绝。
+- 已新增项目上下文 JSON 入口：`admin.project-context.show`、`admin.project-context.switch`；session 只保存项目 ID，每次读取都会重新查询项目状态和成员关系，撤销/停用会清除旧上下文。
+- 已新增 `admin.project_surface` middleware，并挂到现有后台资源组：在阶段 2 资源过滤完成前，普通管理员不会进入全局资源页面；super admin 保留现有后台访问能力。未新增客户登录、客户 token 或资源旁路授权。
+- 验证：新增 `ProjectAccessServiceTest` 与既有 `ClientProjectDomainSchemaTest` 共 8 tests / 48 assertions 通过；新增 PHP 文件语法检查通过；`git diff --check` 通过。
+
+### 1E 执行记录（2026-08-22）
+
+- 已新增 `personal_access_tokens.client_project_id` 与 `binding_mode`，新绑定 token 使用 `project`，历史/未绑定 token 明确标记为 `legacy_global`。
+- `ApiTokenService` 支持签发单项目 token，并在返回元数据中包含绑定项目和模式；`ApiAuthContext` 提供统一项目读取方法。
+- 已新增 `api.project_binding` middleware：绑定 token 必须与路由/请求目标项目一致；legacy_global 仅允许超级管理员兼容使用，非超级管理员拒绝。该别名暂未挂到未完成项目化的现有 API 页面，避免扩大阶段 1 的资源改造范围。
+
+### 1F 执行记录（2026-08-22）
+
+- 已新增不可变 `ai_usage_events` 表、`AiUsageEvent` 模型和 `AiUsageObservationWriter` 追加入口。
+- 事件支持 project/platform/system scope、model、operation、attempt、units、outcome、fallback、reservation key 和受限 metadata；project scope 必须有已验证项目 ID。
+- reservation key 唯一保证重复 finalize 不重复记账；模型禁止更新和删除；writer 不保存 prompt、正文、密钥等敏感正文。
+- 验证：新增 observation 测试覆盖成功事件、失败事件入口、幂等追加、敏感 metadata 丢弃和不可变约束。
 
 ## 1. 阶段目标
 

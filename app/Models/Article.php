@@ -34,6 +34,7 @@ class Article extends Model
         'is_hot',
         'is_featured',
         'published_at',
+        'client_project_id',
     ];
 
     protected function casts(): array
@@ -48,12 +49,18 @@ class Article extends Model
             'is_hot' => 'boolean',
             'is_featured' => 'boolean',
             'published_at' => 'datetime',
+            'client_project_id' => 'integer',
         ];
     }
 
     public function category(): BelongsTo
     {
         return $this->belongsTo(Category::class, 'category_id');
+    }
+
+    public function clientProject(): BelongsTo
+    {
+        return $this->belongsTo(ClientProject::class, 'client_project_id');
     }
 
     public function author(): BelongsTo
