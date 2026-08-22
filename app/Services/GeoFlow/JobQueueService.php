@@ -3,6 +3,7 @@
 namespace App\Services\GeoFlow;
 
 use App\Jobs\ProcessGeoFlowTaskJob;
+use App\Enums\ClientProjectStatus;
 use App\Models\Task;
 use App\Models\TaskRun;
 use Illuminate\Support\Carbon;
@@ -95,8 +96,9 @@ class JobQueueService
             $taskRow = Task::query()
                 ->whereKey($taskId)
                 ->lockForUpdate()
-                ->first(['id', 'max_retry_count']);
-            if (! $taskRow) {
+                ->with('clientProject:id,status')
+                ->first(['id', 'max_retry_count', 'status', 'schedule_enabled', 'client_project_id']);
+            if (! $taskRow || ! $this->taskIsExecutable($taskRow)) {
                 return null;
             }
 
@@ -119,7 +121,7 @@ class JobQueueService
                 'status' => 'pending',
                 'meta' => [
                     'job_type' => $jobType,
-                    'payload' => $payload,
+                    'payload' => $this->sanitizePayload($payload),
                     'attempt_count' => 0,
                     'max_attempts' => $maxAttempts,
                     'available_at' => $availableAtValue->toDateTimeString(),
@@ -150,7 +152,7 @@ class JobQueueService
         $claimedJob = DB::transaction(function () use ($jobId, $workerId): ?array {
             // 使用悲观锁 + 状态条件，确保同一条记录只会被一个 worker 成功 claim。
             $run = TaskRun::query()
-                ->with('task:id,status,schedule_enabled,publish_interval')
+                ->with(['task:id,status,schedule_enabled,publish_interval,client_project_id', 'task.clientProject:id,status'])
                 ->whereKey($jobId)
                 ->where('status', 'pending')
                 ->lockForUpdate()
@@ -161,7 +163,7 @@ class JobQueueService
             }
             $task = $run->task;
             // 任务未激活或调度被关闭时，不允许执行。
-            if (! $task || ($task->status ?? 'paused') !== 'active' || (int) ($task->schedule_enabled ?? 1) !== 1) {
+            if (! $task || ! $this->taskIsExecutable($task)) {
                 TaskRun::query()
                     ->whereKey((int) $run->id)
                     ->where('status', 'pending')
@@ -232,14 +234,24 @@ class JobQueueService
      */
     public function completeJob(int $jobId, int $taskId, ?int $articleId, int $durationMs, array $meta = []): void
     {
-        TaskRun::query()->whereKey($jobId)->update([
-            'status' => 'completed',
-            'finished_at' => now(),
-            'article_id' => $articleId,
-            'duration_ms' => $durationMs,
-            'meta' => $meta,
-            'error_message' => '',
-        ]);
+        $completed = DB::transaction(function () use ($jobId, $taskId, $articleId, $durationMs, $meta): bool {
+            $run = TaskRun::query()->with('task:id,client_project_id')->whereKey($jobId)->lockForUpdate()->first();
+            if (! $run || (int) $run->task_id !== $taskId || $run->status !== 'running') {
+                return false;
+            }
+            if (! $this->taskProjectMatches($run->task)) {
+                $run->forceFill(['status' => 'cancelled', 'finished_at' => now(), 'error_message' => '项目已停用，取消执行结果'])->save();
+                return false;
+            }
+            $run->forceFill([
+                'status' => 'completed', 'finished_at' => now(), 'article_id' => $articleId,
+                'duration_ms' => $durationMs, 'meta' => $meta, 'error_message' => '',
+            ])->save();
+            return true;
+        });
+        if (! $completed) {
+            return;
+        }
 
         Task::query()->whereKey($taskId)->update([
             'last_run_at' => now(),
@@ -262,31 +274,23 @@ class JobQueueService
      */
     public function failJob(int $jobId, int $taskId, string $errorMessage, int $durationMs, int $retryDelaySeconds = 60): void
     {
-        $run = TaskRun::query()->whereKey($jobId)->first();
-        if (! $run) {
-            return;
-        }
-
-        $runMeta = $this->normalizeMeta($run->meta);
-        $attemptCount = (int) ($runMeta['attempt_count'] ?? 0) + 1;
-        $maxAttempts = max(1, (int) ($runMeta['max_attempts'] ?? 3));
-        $shouldRetry = $attemptCount < $maxAttempts;
-        $nextAvailableAt = now()->addSeconds(max(1, $retryDelaySeconds));
-
-        $newMeta = array_merge($runMeta, [
-            'attempt_count' => $attemptCount,
-            'max_attempts' => $maxAttempts,
-            'last_error' => $errorMessage,
-            'available_at' => $shouldRetry ? $nextAvailableAt->toDateTimeString() : ($runMeta['available_at'] ?? ''),
-        ]);
-
-        TaskRun::query()->whereKey($jobId)->update([
-            'status' => $shouldRetry ? 'pending' : 'failed',
-            'error_message' => $errorMessage,
-            'duration_ms' => $durationMs,
-            'finished_at' => $shouldRetry ? null : now(),
-            'meta' => $newMeta,
-        ]);
+        $nextAvailableAt = null;
+        $updated = DB::transaction(function () use ($jobId, $taskId, $errorMessage, $durationMs, $retryDelaySeconds, &$nextAvailableAt): bool {
+            $run = TaskRun::query()->with('task:id,client_project_id')->whereKey($jobId)->lockForUpdate()->first();
+            if (! $run || (int) $run->task_id !== $taskId || $run->status !== 'running') {
+                return false;
+            }
+            $runMeta = $this->normalizeMeta($run->meta);
+            $attemptCount = (int) ($runMeta['attempt_count'] ?? 0) + 1;
+            $maxAttempts = max(1, (int) ($runMeta['max_attempts'] ?? 3));
+            $nextAvailableAt = now()->addSeconds(max(1, $retryDelaySeconds));
+            $shouldRetry = $attemptCount < $maxAttempts && $this->taskProjectMatches($run->task);
+            $newMeta = array_merge($runMeta, ['attempt_count' => $attemptCount, 'max_attempts' => $maxAttempts, 'last_error' => $errorMessage, 'available_at' => $shouldRetry ? $nextAvailableAt->toDateTimeString() : ($runMeta['available_at'] ?? '')]);
+            $run->forceFill(['status' => $shouldRetry ? 'pending' : 'failed', 'error_message' => $errorMessage, 'duration_ms' => $durationMs, 'finished_at' => $shouldRetry ? null : now(), 'meta' => $newMeta])->save();
+            return true;
+        });
+        if (! $updated) return;
+        $shouldRetry = $nextAvailableAt instanceof Carbon && TaskRun::query()->whereKey($jobId)->value('status') === 'pending';
 
         Task::query()->whereKey($taskId)->update([
             'last_run_at' => now(),
@@ -307,13 +311,13 @@ class JobQueueService
      */
     public function cancelJob(int $jobId, int $taskId, string $reason = '管理员手动停止'): void
     {
-        TaskRun::query()->whereKey($jobId)->update([
-            'status' => 'cancelled',
-            'finished_at' => now(),
-            'error_message' => $reason,
-            'duration_ms' => 0,
-        ]);
-
+        $updated = DB::transaction(function () use ($jobId, $taskId, $reason): bool {
+            $run = TaskRun::query()->with('task:id,client_project_id')->whereKey($jobId)->lockForUpdate()->first();
+            if (! $run || (int) $run->task_id !== $taskId || ! in_array($run->status, ['pending', 'running'], true)) return false;
+            $run->forceFill(['status' => 'cancelled', 'finished_at' => now(), 'error_message' => $reason, 'duration_ms' => 0])->save();
+            return true;
+        });
+        if (! $updated) return;
         Task::query()->whereKey($taskId)->update([
             'last_run_at' => now(),
             'last_error_at' => now(),
@@ -356,7 +360,7 @@ class JobQueueService
             try {
                 $redispatched = DB::transaction(function () use ($jobId, $threshold, $dispatchToken): bool {
                     $run = TaskRun::query()
-                        ->with('task:id,status,schedule_enabled')
+                        ->with(['task:id,status,schedule_enabled,client_project_id', 'task.clientProject:id,status'])
                         ->whereKey($jobId)
                         ->where('status', 'running')
                         ->where('started_at', '<', $threshold)
@@ -367,7 +371,7 @@ class JobQueueService
                     }
 
                     $task = $run->task;
-                    if (! $task || ($task->status ?? 'paused') !== 'active' || (int) ($task->schedule_enabled ?? 1) !== 1) {
+                    if (! $task || ! $this->taskIsExecutable($task)) {
                         TaskRun::query()
                             ->whereKey($jobId)
                             ->where('status', 'running')
@@ -435,7 +439,7 @@ class JobQueueService
             try {
                 $redispatched = DB::transaction(function () use ($jobId, $threshold, $dispatchToken): bool {
                     $run = TaskRun::query()
-                        ->with('task:id,status,schedule_enabled')
+                        ->with(['task:id,status,schedule_enabled,client_project_id', 'task.clientProject:id,status'])
                         ->whereKey($jobId)
                         ->where('status', 'pending')
                         ->lockForUpdate()
@@ -445,7 +449,7 @@ class JobQueueService
                     }
 
                     $task = $run->task;
-                    if (! $task || ($task->status ?? 'paused') !== 'active' || (int) ($task->schedule_enabled ?? 1) !== 1) {
+                    if (! $task || ! $this->taskIsExecutable($task)) {
                         TaskRun::query()
                             ->whereKey($jobId)
                             ->where('status', 'pending')
@@ -547,6 +551,47 @@ class JobQueueService
         }
     }
 
+    private function taskIsExecutable(Task $task): bool
+    {
+        return ($task->status ?? 'paused') === 'active'
+            && (int) ($task->schedule_enabled ?? 1) === 1
+            && $this->taskProjectMatches($task);
+    }
+
+    private function sanitizePayload(array $payload): array
+    {
+        return array_intersect_key($payload, array_flip(['source', 'action', 'article_id', 'title_id']));
+    }
+
+    /**
+     * A queue worker re-reads this relationship at execution time. A suspended
+     * project therefore cancels queued work instead of running with stale context.
+     */
+    private function taskProjectMatches(?Task $task): bool
+    {
+        if (! $task) {
+            return false;
+        }
+
+        if ((int) ($task->client_project_id ?? 0) <= 0) {
+            return true;
+        }
+
+        $project = $task->relationLoaded('clientProject')
+            ? $task->getRelation('clientProject')
+            : $task->clientProject()->first(['id', 'status']);
+
+        if (! $project) {
+            return false;
+        }
+
+        $status = $project->status instanceof ClientProjectStatus
+            ? $project->status->value
+            : (string) $project->status;
+
+        return $status === ClientProjectStatus::ACTIVE->value;
+    }
+
     /**
      * 将 task_runs 执行记录投递到 Laravel 队列。
      */
@@ -592,8 +637,9 @@ class JobQueueService
 
         $task = Task::query()
             ->whereKey($taskId)
-            ->first(['id', 'status', 'schedule_enabled', 'created_count', 'article_limit', 'draft_limit']);
-        if (! $task || ($task->status ?? 'paused') !== 'active' || (int) ($task->schedule_enabled ?? 1) !== 1) {
+            ->with('clientProject:id,status')
+            ->first(['id', 'status', 'schedule_enabled', 'created_count', 'article_limit', 'draft_limit', 'client_project_id']);
+        if (! $task || ! $this->taskIsExecutable($task)) {
             return;
         }
 

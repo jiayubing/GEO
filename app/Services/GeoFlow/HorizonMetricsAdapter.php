@@ -3,6 +3,7 @@
 namespace App\Services\GeoFlow;
 
 use App\Models\TaskRun;
+use App\Models\ClientProject;
 use Throwable;
 
 /**
@@ -26,7 +27,7 @@ class HorizonMetricsAdapter
      *
      * @return array{pending:int,running:int,failed:int,completed:int}
      */
-    public function queueOverview(string $queueName = 'geoflow'): array
+    public function queueOverview(string $queueName = 'geoflow', ?ClientProject $project = null): array
     {
         $overview = [
             'pending' => 0,
@@ -38,6 +39,7 @@ class HorizonMetricsAdapter
         try {
             // 管理页口径统一到 task_runs，避免 Redis reserved 列表短时抖动导致“执行中”假阳性。
             $stats = TaskRun::query()
+                ->when($project !== null, fn ($query) => $query->whereHas('task', fn ($task) => $task->where('client_project_id', (int) $project->getKey())))
                 ->selectRaw("
                     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
                     SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,

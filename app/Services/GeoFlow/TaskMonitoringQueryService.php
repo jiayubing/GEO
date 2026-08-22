@@ -5,6 +5,7 @@ namespace App\Services\GeoFlow;
 use App\Models\Task;
 use App\Models\TaskRun;
 use App\Models\WorkerHeartbeat;
+use App\Models\ClientProject;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -34,17 +35,17 @@ class TaskMonitoringQueryService
      *     task_summary:array{total_tasks:int,enabled_tasks:int,total_articles:int,published_articles:int}
      * }
      */
-    public function buildAdminOverview(int $page = 1, int $perPage = 50): array
+    public function buildAdminOverview(int $page = 1, int $perPage = 50, ?ClientProject $project = null): array
     {
-        $paginatedTasks = $this->listTasksPaginated($page, $perPage);
+        $paginatedTasks = $this->listTasksPaginated($page, $perPage, [], $project);
 
         return [
             'tasks' => $paginatedTasks['items'],
-            'queue_overview' => $this->horizonMetrics->queueOverview('geoflow'),
-            'worker_overview' => $this->workerOverview(),
-            'recent_runs' => $this->recentRuns(),
+            'queue_overview' => $this->horizonMetrics->queueOverview('geoflow', $project),
+            'worker_overview' => $this->workerOverview($project),
+            'recent_runs' => $this->recentRuns($project),
             'pagination' => $paginatedTasks['pagination'],
-            'task_summary' => $this->taskSummary(),
+            'task_summary' => $this->taskSummary($project),
         ];
     }
 
@@ -53,9 +54,9 @@ class TaskMonitoringQueryService
      *
      * @return list<array<string,mixed>>
      */
-    public function buildTaskSnapshot(): array
+    public function buildTaskSnapshot(?ClientProject $project = null): array
     {
-        return $this->listTasksPaginated(1, 100)['items'];
+        return $this->listTasksPaginated(1, 100, [], $project)['items'];
     }
 
     /**
@@ -67,7 +68,7 @@ class TaskMonitoringQueryService
      *     pagination:array{page:int,per_page:int,total:int,total_pages:int}
      * }
      */
-    public function listTasksPaginated(int $page = 1, int $perPage = 20, array $filters = []): array
+    public function listTasksPaginated(int $page = 1, int $perPage = 20, array $filters = [], ?ClientProject $project = null): array
     {
         $page = max(1, $page);
         $perPage = max(1, min(100, $perPage));
@@ -75,6 +76,7 @@ class TaskMonitoringQueryService
         $query = Task::query()
             ->when(! empty($filters['status']), fn ($q) => $q->where('status', (string) $filters['status']))
             ->when(! empty($filters['search']), fn ($q) => $q->where('name', 'like', '%'.trim((string) $filters['search']).'%'))
+            ->when($project !== null, fn ($q) => $q->where('client_project_id', (int) $project->getKey()))
             ->orderByDesc('created_at')
             ->orderByDesc('id');
 
@@ -83,7 +85,7 @@ class TaskMonitoringQueryService
         $rows = $query->forPage($page, $perPage)->get();
 
         return [
-            'items' => $this->decorateTasks($rows)->values()->all(),
+            'items' => $this->decorateTasks($rows, $project)->values()->all(),
             'pagination' => [
                 'page' => $page,
                 'per_page' => $perPage,
@@ -98,10 +100,14 @@ class TaskMonitoringQueryService
      *
      * @return array<string,mixed>
      */
-    public function getTaskMonitoringDetail(int $taskId): array
+    public function getTaskMonitoringDetail(int $taskId, ?ClientProject $project = null): array
     {
-        $task = Task::query()->whereKey($taskId)->firstOrFail();
-        $decorated = $this->decorateTasks(collect([$task]))->first();
+        $query = Task::query()->whereKey($taskId);
+        if ($project !== null) {
+            $query->where('client_project_id', (int) $project->getKey());
+        }
+        $task = $query->firstOrFail();
+        $decorated = $this->decorateTasks(collect([$task]), $project)->first();
 
         return is_array($decorated) ? $decorated : [];
     }
@@ -110,7 +116,7 @@ class TaskMonitoringQueryService
      * @param  Collection<int, Task>  $tasks
      * @return Collection<int, array<string,mixed>>
      */
-    private function decorateTasks(Collection $tasks): Collection
+    private function decorateTasks(Collection $tasks, ?ClientProject $project = null): Collection
     {
         if ($tasks->isEmpty()) {
             return collect([]);
@@ -121,15 +127,22 @@ class TaskMonitoringQueryService
 
         // 文章统计（业务真相）：总文章数 + 已发布数。
         $articleStats = DB::table('articles')
+            ->join('tasks', 'tasks.id', '=', 'articles.task_id')
             ->selectRaw("
                 task_id,
                 COUNT(*) AS total_articles,
-                SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END) AS published_articles,
-                SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) AS draft_articles,
-                SUM(CASE WHEN status = 'draft' AND review_status IN ('approved','auto_approved') THEN 1 ELSE 0 END) AS publishable_drafts
+                SUM(CASE WHEN articles.status = 'published' THEN 1 ELSE 0 END) AS published_articles,
+                SUM(CASE WHEN articles.status = 'draft' THEN 1 ELSE 0 END) AS draft_articles,
+                SUM(CASE WHEN articles.status = 'draft' AND articles.review_status IN ('approved','auto_approved') THEN 1 ELSE 0 END) AS publishable_drafts
             ")
-            ->whereIn('task_id', $taskIds)
-            ->whereNull('deleted_at')
+            ->whereIn('articles.task_id', $taskIds)
+            ->where(function ($query): void {
+                $query->whereColumn('articles.client_project_id', 'tasks.client_project_id')
+                    ->orWhere(function ($nulls): void {
+                        $nulls->whereNull('articles.client_project_id')->whereNull('tasks.client_project_id');
+                    });
+            })
+            ->whereNull('articles.deleted_at')
             ->groupBy('task_id')
             ->get()
             ->mapWithKeys(fn ($row): array => [
@@ -144,6 +157,7 @@ class TaskMonitoringQueryService
         // 分发统计（文章维度）：用于任务列表快速暴露远程同步结果。
         $distributionStats = DB::table('article_distributions')
             ->join('articles', 'articles.id', '=', 'article_distributions.article_id')
+            ->join('tasks', 'tasks.id', '=', 'articles.task_id')
             ->selectRaw("
                 articles.task_id,
                 COUNT(*) AS distribution_total_count,
@@ -151,6 +165,12 @@ class TaskMonitoringQueryService
                 SUM(CASE WHEN article_distributions.status = 'failed' THEN 1 ELSE 0 END) AS distribution_failed_count
             ")
             ->whereIn('articles.task_id', $taskIds)
+            ->where(function ($query): void {
+                $query->whereColumn('articles.client_project_id', 'tasks.client_project_id')
+                    ->orWhere(function ($nulls): void {
+                        $nulls->whereNull('articles.client_project_id')->whereNull('tasks.client_project_id');
+                    });
+            })
             ->whereNull('articles.deleted_at')
             ->groupBy('articles.task_id')
             ->get()
@@ -165,14 +185,15 @@ class TaskMonitoringQueryService
         // 运行统计（业务真相）：pending/running/completed/failed+cancelled 数量。
         // 说明：这里把 cancelled 归入 failed_jobs，用于任务页“失败”概览展示。
         $runStats = TaskRun::query()
+            ->join('tasks', 'tasks.id', '=', 'task_runs.task_id')
             ->selectRaw("
                 task_id,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_jobs,
-                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_jobs,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_jobs,
-                SUM(CASE WHEN status IN ('failed','cancelled') THEN 1 ELSE 0 END) AS failed_jobs
+                SUM(CASE WHEN task_runs.status = 'pending' THEN 1 ELSE 0 END) AS pending_jobs,
+                SUM(CASE WHEN task_runs.status = 'running' THEN 1 ELSE 0 END) AS running_jobs,
+                SUM(CASE WHEN task_runs.status = 'completed' THEN 1 ELSE 0 END) AS completed_jobs,
+                SUM(CASE WHEN task_runs.status IN ('failed','cancelled') THEN 1 ELSE 0 END) AS failed_jobs
             ")
-            ->whereIn('task_id', $taskIds)
+            ->whereIn('task_runs.task_id', $taskIds)
             ->groupBy('task_id')
             ->get()
             ->mapWithKeys(fn ($row): array => [
@@ -186,9 +207,10 @@ class TaskMonitoringQueryService
 
         // 最近一条执行记录：用于回填最新状态、错误信息、重试次数等字段。
         $latestRunIds = TaskRun::query()
-            ->selectRaw('task_id, MAX(id) AS latest_id')
-            ->whereIn('task_id', $taskIds)
-            ->groupBy('task_id');
+            ->join('tasks', 'tasks.id', '=', 'task_runs.task_id')
+            ->selectRaw('task_runs.task_id, MAX(task_runs.id) AS latest_id')
+            ->whereIn('task_runs.task_id', $taskIds)
+            ->groupBy('task_runs.task_id');
         $latestRuns = TaskRun::query()
             ->joinSub($latestRunIds, 'latest_task_runs', function ($join): void {
                 $join->on('task_runs.id', '=', 'latest_task_runs.latest_id');
@@ -199,6 +221,7 @@ class TaskMonitoringQueryService
         // 显示名称映射：减少后续 map 内重复查询。
         $titleNames = DB::table('title_libraries')
             ->whereIn('id', $tasks->pluck('title_library_id')->filter()->all())
+            ->when($project !== null && Schema::hasColumn('title_libraries', 'client_project_id'), fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
             ->pluck('name', 'id');
 
         $modelNames = DB::table('ai_models')
@@ -207,9 +230,10 @@ class TaskMonitoringQueryService
 
         $legacyKnowledgeBaseNames = DB::table('knowledge_bases')
             ->whereIn('id', $tasks->pluck('knowledge_base_id')->filter()->all())
+            ->when($project !== null && Schema::hasColumn('knowledge_bases', 'client_project_id'), fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
             ->pluck('name', 'id');
 
-        $taskKnowledgeBaseLinks = $this->loadTaskKnowledgeBaseLinks($taskIds);
+        $taskKnowledgeBaseLinks = $this->loadTaskKnowledgeBaseLinks($taskIds, $project);
 
         return $tasks->map(function (Task $task) use ($articleStats, $distributionStats, $runStats, $latestRuns, $titleNames, $modelNames, $legacyKnowledgeBaseNames, $taskKnowledgeBaseLinks): array {
             $taskId = (int) $task->id;
@@ -323,7 +347,7 @@ class TaskMonitoringQueryService
      * @param  list<int>  $taskIds
      * @return Collection<int, Collection<int, array{id:int,name:string}>>
      */
-    private function loadTaskKnowledgeBaseLinks(array $taskIds): Collection
+    private function loadTaskKnowledgeBaseLinks(array $taskIds, ?ClientProject $project = null): Collection
     {
         if (empty($taskIds) || ! Schema::hasTable('task_knowledge_bases')) {
             return collect([]);
@@ -332,6 +356,7 @@ class TaskMonitoringQueryService
         return DB::table('task_knowledge_bases')
             ->join('knowledge_bases', 'knowledge_bases.id', '=', 'task_knowledge_bases.knowledge_base_id')
             ->whereIn('task_knowledge_bases.task_id', $taskIds)
+            ->when($project !== null && Schema::hasColumn('knowledge_bases', 'client_project_id'), fn ($query) => $query->where('knowledge_bases.client_project_id', (int) $project->getKey()))
             ->orderBy('task_knowledge_bases.sort_order')
             ->orderBy('knowledge_bases.id')
             ->get([
@@ -351,15 +376,28 @@ class TaskMonitoringQueryService
     /**
      * @return array{total_tasks:int,enabled_tasks:int,total_articles:int,published_articles:int}
      */
-    private function taskSummary(): array
+    private function taskSummary(?ClientProject $project = null): array
     {
-        $taskCounts = Task::query()
+        $taskQuery = Task::query();
+        if ($project !== null) {
+            $taskQuery->where('client_project_id', (int) $project->getKey());
+        }
+        $taskCounts = $taskQuery
             ->selectRaw("COUNT(*) AS total_tasks, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS enabled_tasks")
             ->first();
         $articleCounts = DB::table('articles')
-            ->whereNotNull('task_id')
-            ->whereNull('deleted_at')
-            ->selectRaw("COUNT(*) AS total_articles, SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END) AS published_articles")
+            ->when($project !== null, function ($q) use ($project): void {
+                $q->leftJoin('tasks', 'tasks.id', '=', 'articles.task_id')
+                    ->where(function ($scope) use ($project): void {
+                        $scope->where('articles.client_project_id', (int) $project->getKey())
+                            ->where(function ($taskScope): void {
+                                $taskScope->whereNull('articles.task_id')->orWhereColumn('tasks.client_project_id', 'articles.client_project_id');
+                            });
+                    });
+            })
+            ->whereNotNull('articles.task_id')
+            ->whereNull('articles.deleted_at')
+            ->selectRaw("COUNT(*) AS total_articles, SUM(CASE WHEN articles.status = 'published' THEN 1 ELSE 0 END) AS published_articles")
             ->first();
 
         return [
@@ -421,7 +459,7 @@ class TaskMonitoringQueryService
     /**
      * @return list<array<string,mixed>>
      */
-    private function workerOverview(): array
+    private function workerOverview(?ClientProject $project = null): array
     {
         try {
             return WorkerHeartbeat::query()
@@ -429,7 +467,7 @@ class TaskMonitoringQueryService
                 ->orderByDesc('last_seen_at')
                 ->limit(5)
                 ->get()
-                ->map(static function (WorkerHeartbeat $row): array {
+                ->map(function (WorkerHeartbeat $row) use ($project): array {
                     $meta = is_array($row->meta) ? $row->meta : [];
                     $isStale = $row->last_seen_at === null
                         || $row->last_seen_at->lessThan(now()->subSeconds(
@@ -440,14 +478,16 @@ class TaskMonitoringQueryService
                         'worker_id' => (string) $row->worker_id,
                         'status' => $isStale ? 'stale' : (string) $row->status,
                         'is_stale' => $isStale,
-                        'current_job_id' => isset($meta['task_run_id']) ? (int) $meta['task_run_id'] : null,
+                        // Worker heartbeats are platform-wide; project views must not expose another project's run id.
+                        'current_job_id' => $project === null && isset($meta['task_run_id']) ? (int) $meta['task_run_id'] : null,
                         'memory_mb' => isset($meta['memory_mb']) ? (float) $meta['memory_mb'] : null,
                         'peak_memory_mb' => isset($meta['peak_memory_mb']) ? (float) $meta['peak_memory_mb'] : null,
                         'last_seen_at' => $row->last_seen_at?->toDateTimeString(),
                     ];
                 })
                 ->all();
-        } catch (\Throwable) {
+        } catch (\Throwable $exception) {
+            report($exception);
             return [];
         }
     }
@@ -455,9 +495,14 @@ class TaskMonitoringQueryService
     /**
      * @return list<array<string,mixed>>
      */
-    private function recentRuns(): array
+    private function recentRuns(?ClientProject $project = null): array
     {
-        return TaskRun::query()
+        $query = TaskRun::query();
+        if ($project !== null) {
+            $query->whereHas('task', fn ($q) => $q->where('client_project_id', (int) $project->getKey()));
+        }
+
+        return $query
             ->select(['id', 'task_id', 'status', 'error_message', 'created_at'])
             ->with(['task:id,name'])
             ->orderByDesc('created_at')

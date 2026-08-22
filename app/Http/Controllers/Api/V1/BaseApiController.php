@@ -5,6 +5,9 @@ namespace App\Http\Controllers\Api\V1;
 use App\Exceptions\ApiException;
 use App\Http\ApiAuthContext;
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
+use App\Models\ClientProject;
+use App\Services\GeoFlow\ProjectAccessService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -37,6 +40,39 @@ abstract class BaseApiController extends Controller
         }
 
         return $context;
+    }
+
+    protected function project(Request $request, bool $write = false): ?ClientProject
+    {
+        $context = $this->auth($request);
+        $admin = Admin::query()->find($context->auditAdminId);
+        if (! $admin instanceof Admin) {
+            throw new ApiException('unauthorized', '管理员无效', 401);
+        }
+
+        $projectId = $context->projectId();
+        if ($projectId === null) {
+            $projectId = $request->integer('project_id');
+        }
+        if ($projectId <= 0) {
+            // Legacy global tokens remain readable during migration; project-bound
+            // tokens can never omit their immutable binding.
+            return null;
+        }
+
+        $project = ClientProject::query()->find($projectId);
+        if (! $project) {
+            throw new ApiException('project_not_found', '项目不存在或当前管理员无权访问', 404);
+        }
+
+        $access = app(ProjectAccessService::class);
+        if ($write) {
+            $access->requireWrite($admin, $project, true);
+        } else {
+            $access->requireRead($admin, $project);
+        }
+
+        return $project;
     }
 
     /**

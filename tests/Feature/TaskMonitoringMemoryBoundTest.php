@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Events\Admin\TasksOverviewUpdated;
 use App\Models\Task;
 use App\Models\TaskRun;
+use App\Models\Client;
+use App\Models\ClientProject;
 use App\Services\GeoFlow\TaskMonitoringQueryService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -115,6 +117,41 @@ class TaskMonitoringMemoryBoundTest extends TestCase
             'changed_at' => '2026-07-28T12:00:00+08:00',
         ], $payload);
         $this->assertArrayNotHasKey('tasks', $payload);
+    }
+
+    public function test_project_overview_filters_tasks_runs_articles_and_queue_counts_in_sql(): void
+    {
+        $client = Client::query()->create(['name' => '监控客户', 'slug' => 'monitoring-client']);
+        $first = ClientProject::query()->create(['client_id' => $client->id, 'name' => '项目一', 'slug' => 'project-one', 'status' => 'active']);
+        $second = ClientProject::query()->create(['client_id' => $client->id, 'name' => '项目二', 'slug' => 'project-two', 'status' => 'active']);
+        $taskOne = Task::query()->create(['name' => '项目一任务', 'status' => 'active', 'schedule_enabled' => 1, 'client_project_id' => $first->id]);
+        $taskTwo = Task::query()->create(['name' => '项目二任务', 'status' => 'active', 'schedule_enabled' => 1, 'client_project_id' => $second->id]);
+        TaskRun::query()->create(['task_id' => $taskOne->id, 'status' => 'pending', 'meta' => []]);
+        TaskRun::query()->create(['task_id' => $taskTwo->id, 'status' => 'running', 'meta' => []]);
+
+        $overview = app(TaskMonitoringQueryService::class)->buildAdminOverview(1, 50, $first);
+
+        $this->assertSame(['项目一任务'], array_column($overview['tasks'], 'name'));
+        $this->assertSame(1, $overview['pagination']['total']);
+        $this->assertSame(1, $overview['task_summary']['total_tasks']);
+        $this->assertSame(1, $overview['queue_overview']['pending']);
+        $this->assertSame(0, $overview['queue_overview']['running']);
+        $this->assertCount(0, array_filter($overview['recent_runs'], fn (array $run): bool => $run['task_id'] === (int) $taskTwo->id));
+
+        $snapshot = app(TaskMonitoringQueryService::class)->buildTaskSnapshot($first);
+        $this->assertSame(['项目一任务'], array_column($snapshot, 'name'));
+
+        $category = DB::table('categories')->insertGetId(['name' => '监控分类', 'slug' => 'monitoring-category', 'created_at' => now()]);
+        $author = DB::table('authors')->insertGetId(['name' => '监控作者', 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('articles')->insert([
+            'title' => '错配文章', 'slug' => 'mismatch-article', 'content' => 'x', 'status' => 'draft',
+            'review_status' => 'pending', 'category_id' => $category, 'author_id' => $author,
+            'task_id' => $taskOne->id, 'client_project_id' => $second->id,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $filtered = app(TaskMonitoringQueryService::class)->buildAdminOverview(1, 50, $first);
+        $this->assertSame(0, $filtered['tasks'][0]['total_articles']);
+        $this->assertSame(0, $filtered['task_summary']['total_articles']);
     }
 
     public function test_scheduler_processes_large_task_sets_in_bounded_batches(): void

@@ -129,8 +129,8 @@ class ProcessGeoFlowTaskJob implements ShouldQueue
                 '队列中断: '.$message,
                 0
             );
-        } catch (Throwable) {
-            // 避免失败回调自身再抛错导致 Horizon 日志刷屏
+        } catch (Throwable $callbackException) {
+            report($callbackException);
         }
     }
 

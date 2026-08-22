@@ -529,6 +529,7 @@ class ApiV1ContractTest extends TestCase
             app(JobQueueService::class),
             $monitoring,
             $realtime,
+            app(\App\Services\GeoFlow\ProjectResourceResolver::class),
         );
 
         $baselineTransactionLevel = DB::transactionLevel();

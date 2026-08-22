@@ -51,7 +51,8 @@ class ArticleController extends BaseApiController
         return $this->success($request, $articles->listArticles(
             $request->integer('page', 1),
             $request->integer('per_page', 20),
-            $filters
+            $filters,
+            $this->project($request),
         ));
     }
 
@@ -70,11 +71,13 @@ class ArticleController extends BaseApiController
             ]);
         }
 
-        return IdempotencyService::executeJson($request, 'POST /articles', function () use ($request, $articles): JsonResponse {
+        $project = $this->project($request);
+        return IdempotencyService::executeJson($request, 'POST /articles', function () use ($request, $articles, $project): JsonResponse {
             try {
                 return $this->success($request, $articles->createArticle(
                     $request->all(),
-                    $this->auth($request)->auditAdminId
+                    $this->auth($request)->auditAdminId,
+                    $project
                 ), 201);
             } catch (ApiException $exception) {
                 return $this->riskBlockedResponse($request, $exception);
@@ -87,7 +90,7 @@ class ArticleController extends BaseApiController
      */
     public function show(Request $request, int $article, ArticleGeoFlowService $articles): JsonResponse
     {
-        return $this->success($request, $articles->getArticle($article));
+        return $this->success($request, $articles->getArticle($article, $this->project($request)));
     }
 
     /**
@@ -95,13 +98,15 @@ class ArticleController extends BaseApiController
      */
     public function update(Request $request, int $article, ArticleGeoFlowService $articles): JsonResponse
     {
+        $project = $this->project($request);
         return IdempotencyService::executeJson(
             $request,
             'PATCH /articles/{id}',
             fn (): JsonResponse => $this->success($request, $articles->updateArticle(
                 $article,
                 $request->all(),
-                $this->auth($request)->auditAdminId
+                $this->auth($request)->auditAdminId,
+                $project
             )),
         );
     }
@@ -114,15 +119,17 @@ class ArticleController extends BaseApiController
     public function review(Request $request, int $article, ArticleGeoFlowService $articles): JsonResponse
     {
         $body = $request->all();
+        $project = $this->project($request);
 
-        return IdempotencyService::executeJson($request, 'POST /articles/{id}/review', function () use ($request, $article, $articles, $body): JsonResponse {
+        return IdempotencyService::executeJson($request, 'POST /articles/{id}/review', function () use ($request, $article, $articles, $body, $project): JsonResponse {
             try {
                 return $this->success($request, $articles->reviewArticle(
                     $article,
                     trim((string) ($body['review_status'] ?? '')),
                     trim((string) ($body['review_note'] ?? '')),
                     trim((string) ($body['risk_override_reason'] ?? '')),
-                    $this->auth($request)->auditAdminId
+                    $this->auth($request)->auditAdminId,
+                    $project
                 ));
             } catch (ApiException $exception) {
                 return $this->riskBlockedResponse($request, $exception);
@@ -135,11 +142,13 @@ class ArticleController extends BaseApiController
      */
     public function publish(Request $request, int $article, ArticleGeoFlowService $articles): JsonResponse
     {
-        return IdempotencyService::executeJson($request, 'POST /articles/{id}/publish', function () use ($request, $article, $articles): JsonResponse {
+        $project = $this->project($request);
+        return IdempotencyService::executeJson($request, 'POST /articles/{id}/publish', function () use ($request, $article, $articles, $project): JsonResponse {
             try {
                 return $this->success($request, $articles->publishArticle(
                     $article,
-                    $this->auth($request)->auditAdminId
+                    $this->auth($request)->auditAdminId,
+                    $project
                 ));
             } catch (ApiException $exception) {
                 return $this->riskBlockedResponse($request, $exception);
@@ -152,10 +161,11 @@ class ArticleController extends BaseApiController
      */
     public function trash(Request $request, int $article, ArticleGeoFlowService $articles): JsonResponse
     {
+        $project = $this->project($request);
         return IdempotencyService::executeJson(
             $request,
             'POST /articles/{id}/trash',
-            fn (): JsonResponse => $this->success($request, $articles->trashArticle($article)),
+            fn (): JsonResponse => $this->success($request, $articles->trashArticle($article, $project)),
         );
     }
 
