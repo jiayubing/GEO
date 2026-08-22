@@ -196,6 +196,8 @@ publication_gate = legacy_auto | platform_approval
 
 ### 阶段 1：项目基础、授权合同与 legacy 回填
 
+本阶段已拆为独立执行计划：[geoflow-multi-client-phase-1-execution.md](D:/GEOFlow-2.3.0/find/geoflow-multi-client-phase-1-execution.md)。执行顺序为 `1A` 项目/成员 Schema → `1B` owner 与渠道 membership → `1C` legacy 回填 → `1D` 项目上下文 → `1E` 内部 token；`1F` AI usage observation 在项目上下文可用后接入。
+
 **目标**
 
 - 建立 `clients`、`client_projects`、`client_project_members`、角色枚举和项目上下文。
@@ -360,7 +362,7 @@ item : pending → approved → publishing → local_published / remote_synced /
 | 阶段 | 是否需要继续拆分 | 本助手实际执行的工作包 | 执行难度与依赖 |
 | --- | --- | --- | --- |
 | 0 | 拆成 0A–0C 三个只读工作包 | `0A` 版本/Schema 盘点；`0B` invariant report；`0C` 渠道独占或共享决策 | 中；只读，不修改业务数据；0C 未决不能开始渠道归属实现 |
-| 1 | 拆成 1A–1D | `1A` 实体、迁移和索引；`1B` legacy 回填与约束；`1C` 项目上下文、成员和 token；`1D` usage observation | 很高；1A/1B 未验证前不切换运营流程，1C 未验证前不开项目写接口 |
+| 1 | 拆成 1A–1F | `1A` 项目/成员 Schema；`1B` owner 字段与渠道 membership；`1C` legacy carrier 与幂等回填；`1D` 项目上下文与成员授权；`1E` 内部 token 绑定；`1F` AI usage observation | 很高；1A/1B 未验证前不回填，1C 未验证前不切换运营流程，1D/1E 未验证前不开项目写接口；1F 不改变平台 quota |
 | 2 | 拆成 2A–2D | `2A` owner 与跨资源关系；`2B` Service/Job 项目继承；`2C` 后台/API/统计过滤；`2D` 并发、重试、幂等 | 高；必须先闭合知识库→任务→文章链路，再扩展页面和统计 |
 | 3 | 拆成 3A–3C | `3A` gate 合同和状态矩阵；`3B` Worker/API/后台/CLI/调度接入；`3C` 幂等与失败分类回归 | 高；必须覆盖所有公开发布入口，不能只修 Worker |
 | 4 | 拆成 4A–4D，是风险最高阶段 | `4A` batch/item Schema 与状态机；`4B` 提交/退回/批准；`4C` local 目标发布；`4D` channel 与 manual 工单、readback/reconcile | 很高；4C 通过才做本站受控试点，4D 通过前不走真实远程批量发布 |
@@ -372,7 +374,7 @@ item : pending → approved → publishing → local_published / remote_synced /
 
 上表的工作包不是降低验收要求的“任务列表”。每个工作包开始前仍须写明目标、边界和最小验证；最小验证通过后才允许进入同一阶段的下一个工作包。特别是：
 
-1. 阶段 1 的 `1B` 通过前，不得把普通运营人员切换到新的项目上下文；`1C` 通过前，不得开放任何依赖项目 ID 的写接口。
+1. 阶段 1 的 `1A/1B` 通过前，不得执行 legacy 回填；`1C` 通过前，不得把普通运营人员切换到新的项目上下文；`1D/1E` 通过前，不得开放任何依赖项目 ID 的写接口。
 2. 阶段 2 的 `2D` 和阶段 3 的 `3C` 通过前，不得接入真实多客户资料或启用新的自动任务调度。
 3. 阶段 4 的 `4C` 通过后可以做“本站点、单项目、少量文章”的内部试点；`4D` 通过前，不应把真实远程渠道或人工发布工单作为批量生产路径。
 4. 阶段 5 完成前，中央站只能继续承载已确认的 legacy 语义；不能用前台过滤补偿后台尚未完成的项目隔离。
@@ -384,7 +386,7 @@ item : pending → approved → publishing → local_published / remote_synced /
 
 ```text
 阶段 0：完成版本、数据不变量和渠道模型决策
-阶段 1：完成项目基础、legacy 回填、授权合同和用量事件
+阶段 1：按 `1A–1F` 完成项目基础、legacy 回填、授权合同和用量事件
 阶段 2：完成知识库→任务→文章的真实隔离及队列验证
 阶段 6A：验证运营人员继续使用现有资料后台流程
 阶段 3：封闭全部公开发布入口的项目门闸

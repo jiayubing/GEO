@@ -16,6 +16,9 @@
 
 ### 0A：版本、工作区和运行时合同盘点
 
+**状态：已完成（2026-08-22）**  
+交付物：[geoflow-multi-client-phase-0a-report.md](D:/GEOFlow-2.3.0/find/geoflow-multi-client-phase-0a-report.md)。版本、分支、工作区、依赖、路由、CLI、PostgreSQL 连接和 Docker 运行时已完成盘点；宿主机缺少 PHP/Composer 已由项目容器覆盖。未执行迁移、业务写入、队列发布或外部渠道写操作。
+
 **目标**
 
 - 确认当前工作区实际 commit、分支、未提交变更和与计划所依据版本的差异。
@@ -34,6 +37,9 @@
 - 清楚标注“已通过静态证据”“已通过运行时证据”“未验证”，后续阶段只能依赖前两类证据。
 
 ### 0B：legacy 数据不变量和归属风险报告
+
+**状态：已完成（2026-08-22）**  
+交付物：[geoflow-multi-client-phase-0b-invariant-report.md](D:/GEOFlow-2.3.0/find/geoflow-multi-client-phase-0b-invariant-report.md)。当前 PostgreSQL 为空 legacy 基线，已完成 owner 计数、孤儿/重复风险检查；pending migrations 已执行并复核，`manual_publications` 表已建立，SQLite 分发迁移测试通过。渠道模型由 0C ADR 单独冻结。
 
 **目标**
 
@@ -54,6 +60,9 @@
 - “没有发现异常”和“无法验证”必须严格区分；任何未分类异常都阻止阶段 0 通过。
 
 ### 0C：渠道归属模型决策和阶段 0 闸门
+
+**状态：决策已确认（2026-08-22）**  
+决策记录：[geoflow-multi-client-phase-0c-channel-ownership-adr.md](D:/GEOFlow-2.3.0/find/geoflow-multi-client-phase-0c-channel-ownership-adr.md)。采用“平台渠道 + 项目成员关系”；渠道本体及密钥由平台拥有，项目通过授权关系使用。阶段 0 的文档决策已完成；阶段 1 仍需实现并验证授权表、回填和撤销边界。
 
 **目标**
 
@@ -84,6 +93,10 @@
 不得产生迁移文件、数据库写入、客户/项目记录、发布批次、外部渠道写操作或资料导入结果。
 
 ## 4. 阶段 0 完成/阻塞规则
+
+### 当前汇总状态：已通过（2026-08-22）
+
+0A、0B、0C 均已完成：版本/运行时已锁定，PostgreSQL legacy invariant report 已完成，pending migrations 已执行并复核，SQLite 分发迁移测试通过，渠道模型已通过 ADR 冻结。阶段 0 未执行客户/项目创建、回填、发布或外部渠道写操作；可以进入阶段 1A。
 
 ### 允许进入阶段 1
 
