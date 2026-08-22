@@ -270,6 +270,8 @@ publication_gate = legacy_auto | platform_approval
 
 ### 阶段 4：目标级发布批次、渠道和人工工单
 
+本阶段已拆为独立执行计划：[geoflow-multi-client-phase-4-execution.md](D:/GEOFlow-2.3.0/find/geoflow-multi-client-phase-4-execution.md)。执行顺序为 `4A` batch/item Schema 与状态不变量 → `4B` 目标解析、版本冻结与幂等身份 → `4C` 运营提交 → `4D` 平台审批 → `4E/4F/4G` 分别执行 local/channel/manual 目标 → `4H` 恢复、readback/reconcile 与阶段闭环。
+
 **目标**
 
 - 建立平台负责人审批的 `publication_batches` / `publication_batch_items`，并与现有分发和人工发布事实正确衔接。
@@ -300,6 +302,8 @@ item : pending → approved → publishing → local_published / remote_synced /
 - 平台负责人只能批准有权限项目；运营人员只能提交、不能批准；异常项目支持逐 item 审核。
 
 ### 阶段 5：Enterprise Knowledge、URL Import 与中央站过滤
+
+本阶段已拆为独立执行计划：[geoflow-multi-client-phase-5-execution.md](D:/GEOFlow-2.3.0/find/geoflow-multi-client-phase-5-execution.md)。执行顺序为 `5A/5B` Enterprise owner 与草稿/发布链路、`5C/5D` URL Import job 与 commit 链路 → `5E` 中央站公开资格与统一查询 → `5F` slug/canonical identity 合同 → `5G` 全链路回归与阶段闭环。
 
 **目标**
 
@@ -369,8 +373,8 @@ item : pending → approved → publishing → local_published / remote_synced /
 | 1 | 拆成 1A–1F | `1A` 项目/成员 Schema；`1B` owner 字段与渠道 membership；`1C` legacy carrier 与幂等回填；`1D` 项目上下文与成员授权；`1E` 内部 token 绑定；`1F` AI usage observation | 很高；1A/1B 未验证前不回填，1C 未验证前不切换运营流程，1D/1E 未验证前不开项目写接口；1F 不改变平台 quota |
 | 2 | 拆成 2A–2F | `2A` 项目资源解析与同项目引用；`2B` 任务生命周期；`2C` Worker 生成链路；`2D` 队列 Job/TaskRun/恢复；`2E` 文章 Service/API/admin；`2F` 列表、监控、统计和并发幂等 | 高；先闭合同项目资源不变量，再分别接入任务、Worker、文章和队列，最后做全链路查询与并发回归；publication gate、批次和客户入口不得混入 |
 | 3 | 拆成 3A–3F | `3A` gate 合同、默认值和状态矩阵；`3B` 统一状态转换与门闸 owner；`3C` Worker/队列/调度/CLI；`3D` API/admin 审核、发布与批量状态；`3E` 分发与人工发布外部副作用；`3F` 全入口矩阵、legacy 回归与幂等闭环 | 高；3A/3B 是共享合同与事实 owner，3C/3D/3E 分入口收口，3F 才能证明没有旁路 |
-| 4 | 拆成 4A–4D，是风险最高阶段 | `4A` batch/item Schema 与状态机；`4B` 提交/退回/批准；`4C` local 目标发布；`4D` channel 与 manual 工单、readback/reconcile | 很高；4C 通过才做本站受控试点，4D 通过前不走真实远程批量发布 |
-| 5 | 拆成 5A–5C | `5A` Enterprise Knowledge；`5B` URL Import；`5C` 中央站/项目站查询和 slug 合同 | 高；每个工作包都要完成跨项目拒绝和公开前台过滤验证 |
+| 4 | 拆成 4A–4H，是风险最高阶段 | `4A` batch/item Schema、状态机与不变量；`4B` 目标解析、版本冻结与幂等身份；`4C` 运营提交与草稿编排；`4D` 平台审批、退回与逐 item 决策；`4E` local 目标执行与受控本站试点；`4F` channel 目标执行与冻结快照分发；`4G` manual 工单衔接与人工确认；`4H` 恢复、readback/reconcile 与阶段闭环 | 很高；4A–4D 先冻结批次事实与审批合同，4E/4F/4G 分目标执行，4H 才能证明部分成功、不确定和恢复没有被吞掉；4E 通过才做本站受控试点，4F/4G/4H 通过前不走真实远程批量生产 |
+| 5 | 拆成 5A–5G | `5A` Enterprise owner、Schema 与回填；`5B` Enterprise 草稿/Revision/Worker/发布知识库；`5C` URL Import Job owner、权限与持久化工作流；`5D` URL Import Worker/commit 与资料继承；`5E` 中央站公开资格与统一查询；`5F` 项目站点/渠道 slug 与 canonical identity；`5G` 全链路回归与阶段闭环 | 高；5A→5B、5C→5D 分别收口两条后台/Worker 线路，5E/5F 再处理公开查询与身份合同，5G 才能证明没有跨项目或公开前台旁路 |
 | 6 | 拆成 6A–6C | `6A` 现有后台资料流程项目回归；`6B` 项目 quota/存储/文章数/并发；`6C` 队列公平性、告警和聚合报表 | 中高；6A 是资料试点前置，6B/6C 是试点后的规模化加固；不新增客户接收层 |
 | 7 | 按具体交付目标拆分 | `7A` 目标包/渠道合同；`7B` 单个渠道连接器；`7C` 回执、重试、回滚和内部交付 | 中高；没有明确渠道目标时只做 7A，不提前建设项目官网 |
 
@@ -380,8 +384,8 @@ item : pending → approved → publishing → local_published / remote_synced /
 
 1. 阶段 1 的 `1A/1B` 通过前，不得执行 legacy 回填；`1C` 通过前，不得把普通运营人员切换到新的项目上下文；`1D/1E` 通过前，不得开放任何依赖项目 ID 的写接口。
 2. 阶段 2 的 `2D` 和阶段 3 的 `3A–3F` 通过前，不得让新项目进入自动公开发布或真实外部发布；阶段 6A 仍负责验证运营人员在项目上下文中沿用现有资料后台流程。
-3. 阶段 4 的 `4C` 通过后可以做“本站点、单项目、少量文章”的内部试点；`4D` 通过前，不应把真实远程渠道或人工发布工单作为批量生产路径。
-4. 阶段 5 完成前，中央站只能继续承载已确认的 legacy 语义；不能用前台过滤补偿后台尚未完成的项目隔离。
+3. 阶段 4 的 `4A–4D` 通过前，不得创建可执行的真实发布批次；`4E` 通过后可以做“本站点、单项目、少量文章”的内部试点；`4F/4G/4H` 通过前，不应把真实远程渠道或人工发布工单作为批量生产路径。
+4. 阶段 5 的 `5A–5G` 完成前，中央站只能继续承载已确认的 legacy 语义；不能用前台过滤补偿后台尚未完成的项目隔离，也不能宣称 URL Import/Enterprise 已完成多客户隔离。
 5. 阶段 6 的 `6A` 是真实多客户资料试点的前置条件，但不应把 `6B/6C` 的 quota、队列公平性和规模化报表阻塞在首个小规模试点之前；阶段 7 始终是可选项。
 
 #### 后续执行顺序
@@ -394,9 +398,11 @@ item : pending → approved → publishing → local_published / remote_synced /
 阶段 2：按 `2A–2F` 完成知识库→任务→文章的真实隔离及队列验证
 阶段 6A：验证运营人员继续使用现有资料后台流程
 阶段 3：按 `3A–3F` 封闭全部公开发布入口的项目门闸
-阶段 4A–4C：完成本站发布批次闭环；通过后才做受控本站试点
-阶段 4D：完成远程渠道和人工工单的事实衔接
-阶段 5：封闭 Enterprise、URL Import 和中央站缺口
+阶段 4A–4D：完成批次 Schema、目标快照、提交和平台审批闭环
+阶段 4E：完成 local 目标执行；通过后才做受控本站试点
+阶段 4F–4G：分别完成远程渠道和人工工单事实衔接
+阶段 4H：完成恢复、readback/reconcile 和阶段 4 全目标闭环
+阶段 5：按 `5A–5G` 封闭 Enterprise、URL Import 和中央站缺口
 阶段 6B–6C：根据试点暴露的规模化问题实施配额、队列和报表加固
 阶段 7：仅按已确认的具体交付渠道执行
 ```
@@ -491,7 +497,7 @@ MarkdownContentWriterAgent / agent() / Embeddings::for()
 
 ## 10. 最终决策建议
 
-方向可以保留，但只有在阶段 0–3 以及阶段 6A（运营人员沿用现有后台资料流程的项目回归）的最小验证通过后，才可以接入真实多客户试点资料；此时仅允许内部处理和审核，不允许公开发布。完成阶段 4C 后，才可以进行受控的本站发布试点。完整顺序为：
+方向可以保留，但只有在阶段 0–3 以及阶段 6A（运营人员沿用现有后台资料流程的项目回归）的最小验证通过后，才可以接入真实多客户试点资料；此时仅允许内部处理和审核，不允许公开发布。完成阶段 4E 后，才可以进行受控的本站发布试点。完整顺序为：
 
 ```text
 项目表/成员/上下文
@@ -518,8 +524,10 @@ Go/No-Go 条件：
 - 阶段 2 的跨项目拒绝和队列继承通过；
 - 阶段 6A 的知识库、关键词库、标题库和图片库后台流程在项目上下文中可用；
 - 阶段 3 的 `3A–3F` 全入口 gate 矩阵、legacy 回归和幂等/失败分类证据通过；
-- 阶段 4C 的本站发布幂等、版本快照和失败分类通过后，才允许进行本站发布试点；远程渠道仍需等待 `4D`；
-- 阶段 4 才允许平台负责人审批真实发布批次，阶段 5 之后才允许公开前台承载多客户内容。
+- 阶段 4A–4D 的批次/目标快照、提交、审批和幂等合同通过；
+- 阶段 4E 的本站发布幂等、版本校验和失败分类通过后，才允许进行本站发布试点；远程渠道和人工工单仍需等待 `4F/4G/4H`；
+- 阶段 4H 的全目标恢复、readback/reconcile 和状态聚合通过后，才允许平台负责人审批并执行真实批量发布；阶段 5 之后才允许公开前台承载多客户内容。
+- 阶段 5 的 `5A–5G` Enterprise、URL Import、中央站资格查询和 slug/canonical identity 全链路证据通过后，才允许公开前台承载新的多客户内容。
 - 客户始终不获得 GEOFlow 登录、token 或直连写入能力；资料如何从客户交付到运营人员不属于本计划，运营人员沿用现有后台资料流程。
 
 在这些条件完成前，不建议把真实多客户生产资料放进当前全局后台，也不建议用多个 admin 账号、客户编号命名或前端选择框假装已经实现隔离。
