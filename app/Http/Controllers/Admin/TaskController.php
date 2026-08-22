@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AiModel;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\ClientProject;
 use App\Models\DistributionChannel;
 use App\Models\ImageLibrary;
 use App\Models\KnowledgeBase;
@@ -17,6 +18,7 @@ use App\Services\GeoFlow\DistributionOrchestrator;
 use App\Services\GeoFlow\TaskDistributionChannelSelector;
 use App\Services\GeoFlow\TaskLifecycleService;
 use App\Services\GeoFlow\TaskMonitoringQueryService;
+use App\Services\GeoFlow\ProjectAccessService;
 use App\Support\AdminWeb;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -41,6 +43,7 @@ class TaskController extends Controller
         private readonly TaskLifecycleService $taskLifecycleService,
         private readonly TaskMonitoringQueryService $taskMonitoringQueryService,
         private readonly DistributionOrchestrator $distributionOrchestrator,
+        private readonly ProjectAccessService $projectAccess,
     ) {}
 
     /**
@@ -48,10 +51,12 @@ class TaskController extends Controller
      */
     public function index(Request $request): View
     {
+        $project = $this->projectContext($request);
         try {
             $overview = $this->taskMonitoringQueryService->buildAdminOverview(
                 max(1, $request->integer('page', 1)),
                 50,
+                $project,
             );
             $tasks = $overview['tasks'];
             $workers = $overview['worker_overview'];
@@ -95,14 +100,15 @@ class TaskController extends Controller
         }
 
         try {
+            $project = $this->projectContext($request, true);
             $currentStatus = (string) $request->input('status', 'paused');
             if ($currentStatus === 'active') {
-                $this->taskLifecycleService->stopTask($taskId);
+                $this->taskLifecycleService->stopTask($taskId, $project);
 
                 return back()->with('message', __('admin.tasks.message.paused_stopped'));
             }
 
-            $this->taskLifecycleService->startTask($taskId, false);
+            $this->taskLifecycleService->startTask($taskId, false, $project);
 
             return back()->with('message', __('admin.tasks.message.activated'));
         } catch (Throwable $e) {
@@ -113,14 +119,14 @@ class TaskController extends Controller
     /**
      * 删除单个任务（含关联数据级联清理）。
      */
-    public function destroyTask(int $taskId): RedirectResponse
+    public function destroyTask(Request $request, int $taskId): RedirectResponse
     {
         if ($taskId <= 0) {
             return back()->withErrors(__('admin.tasks.message.status_update_failed'));
         }
 
         try {
-            $this->taskLifecycleService->deleteTask($taskId);
+            $this->taskLifecycleService->deleteTask($taskId, $this->projectContext($request, true));
 
             return back()->with('message', __('admin.tasks.message.delete_success'));
         } catch (Throwable $e) {
@@ -131,9 +137,10 @@ class TaskController extends Controller
     /**
      * 任务创建页（先接入可用创建链路，后续继续做 1:1 细节对齐）。
      */
-    public function create(): View
+    public function create(Request $request): View
     {
-        $formOptions = $this->loadTaskFormOptions();
+        $project = $this->projectContext($request);
+        $formOptions = $this->loadTaskFormOptions($project);
 
         // 创建页选项与 tasks.php 数据口径一致（库/模型/作者/分类）。
         return view('admin.tasks.form', [
@@ -164,11 +171,12 @@ class TaskController extends Controller
         $payload = $this->validateTaskForm($request);
         $taskData = $this->buildTaskPayload($request, $payload);
         $channelIds = $this->selectedDistributionChannelIds($request);
+        $project = $this->projectContext($request, true);
 
         try {
-            DB::transaction(function () use ($taskData, $channelIds): void {
+            DB::transaction(function () use ($taskData, $channelIds, $project): void {
                 $this->distributionOrchestrator->lockTaskChannelSelection(null, $channelIds);
-                $createdTask = $this->taskLifecycleService->createTask($taskData);
+                $createdTask = $this->taskLifecycleService->createTask($taskData, $project);
                 $createdTaskId = (int) ($createdTask['id'] ?? 0);
                 if ($createdTaskId) {
                     $this->distributionOrchestrator->syncTaskChannels(
@@ -190,15 +198,16 @@ class TaskController extends Controller
     /**
      * 任务编辑页：与创建页共用同一 Blade 模板。
      */
-    public function edit(int $taskId): View|RedirectResponse
+    public function edit(Request $request, int $taskId): View|RedirectResponse
     {
+        $project = $this->projectContext($request);
         try {
-            $task = $this->taskLifecycleService->getTask($taskId);
+            $task = $this->taskLifecycleService->getTask($taskId, $project);
         } catch (Throwable $e) {
             return redirect()->route('admin.tasks.index')->withErrors($e->getMessage());
         }
 
-        $formOptions = $this->loadTaskFormOptions();
+        $formOptions = $this->loadTaskFormOptions($project);
         $taskModel = Task::query()->whereKey($taskId)->firstOrFail();
 
         return view('admin.tasks.form', [
@@ -254,13 +263,14 @@ class TaskController extends Controller
         $payload = $this->validateTaskForm($request);
         $taskData = $this->buildTaskPayload($request, $payload);
         $channelIds = $this->selectedDistributionChannelIds($request);
+        $project = $this->projectContext($request, true);
         $taskRevision = (string) $payload['task_revision'];
 
         try {
-            DB::transaction(function () use ($taskId, $taskData, $channelIds, $taskRevision): void {
+            DB::transaction(function () use ($taskId, $taskData, $channelIds, $taskRevision, $project): void {
                 $this->distributionOrchestrator->lockTaskChannelSelection($taskId, $channelIds);
                 $this->distributionOrchestrator->assertTaskRevision($taskId, $taskRevision);
-                $this->taskLifecycleService->updateTask($taskId, $taskData);
+                $this->taskLifecycleService->updateTask($taskId, $taskData, $project);
                 $task = Task::query()->whereKey($taskId)->firstOrFail();
                 $this->distributionOrchestrator->syncTaskChannels($task, $channelIds);
             });
@@ -286,6 +296,7 @@ class TaskController extends Controller
             $overview = $this->taskMonitoringQueryService->buildAdminOverview(
                 max(1, $request->integer('page', 1)),
                 50,
+                $this->projectContext($request),
             );
 
             return response()->json([
@@ -318,9 +329,10 @@ class TaskController extends Controller
 
         try {
             $taskId = (int) $payload['task_id'];
+            $project = $this->projectContext($request, true);
             $result = $payload['action'] === 'start'
-                ? $this->taskLifecycleService->startTask($taskId, true)
-                : $this->taskLifecycleService->stopTask($taskId);
+                ? $this->taskLifecycleService->startTask($taskId, true, $project)
+                : $this->taskLifecycleService->stopTask($taskId, $project);
 
             return response()->json([
                 'success' => true,
@@ -340,7 +352,24 @@ class TaskController extends Controller
      */
     private function loadTasks(): array
     {
-        return $this->taskMonitoringQueryService->buildTaskSnapshot();
+        return $this->taskMonitoringQueryService->buildTaskSnapshot($this->projectContext(request()));
+    }
+
+    private function projectContext(Request $request, bool $write = false): ?ClientProject
+    {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof \App\Models\Admin, 401);
+        $project = $request->attributes->get('project_context')
+            ?: $this->projectAccess->resolveContext($request, $admin);
+        if ($write && ! $project instanceof ClientProject) {
+            abort(403, 'project_target_required');
+        }
+        if ($project instanceof ClientProject) {
+            $write
+                ? $this->projectAccess->requireWrite($admin, $project)
+                : $this->projectAccess->requireRead($admin, $project);
+        }
+        return $project instanceof ClientProject ? $project : null;
     }
 
     /**
@@ -434,10 +463,23 @@ class TaskController extends Controller
      *     distributionChannels: list<array{id:int,name:string,domain:string}>
      * }
      */
-    private function loadTaskFormOptions(): array
+    private function loadTaskFormOptions(?ClientProject $project = null): array
     {
         // 直接附带标题数，避免 Blade 层再次查询。
-        $titleLibraries = TitleLibrary::query()
+        $titleLibrariesQuery = TitleLibrary::query();
+        $imageLibrariesQuery = ImageLibrary::query();
+        $knowledgeBasesQuery = KnowledgeBase::query();
+        $authorsQuery = Author::query();
+        $categoriesQuery = Category::query();
+        if ($project instanceof ClientProject) {
+            $titleLibrariesQuery->where('client_project_id', $project->id);
+            $imageLibrariesQuery->where('client_project_id', $project->id);
+            $knowledgeBasesQuery->where('client_project_id', $project->id);
+            $authorsQuery->where('client_project_id', $project->id);
+            $categoriesQuery->where('client_project_id', $project->id);
+        }
+
+        $titleLibraries = $titleLibrariesQuery
             ->select(['id', 'name'])
             ->selectRaw('(SELECT COUNT(*) FROM titles WHERE titles.library_id = title_libraries.id) AS title_count')
             ->orderByDesc('id')
@@ -474,7 +516,7 @@ class TaskController extends Controller
             ->all();
 
         // 兼容上游展示：图库名称 + 图片数量。
-        $imageLibraries = ImageLibrary::query()
+        $imageLibraries = $imageLibrariesQuery
             ->select(['id', 'name'])
             ->selectRaw('(SELECT COUNT(*) FROM images WHERE images.library_id = image_libraries.id) AS image_count')
             ->orderBy('name')
@@ -488,21 +530,21 @@ class TaskController extends Controller
             })
             ->all();
 
-        $knowledgeBases = KnowledgeBase::query()
+        $knowledgeBases = $knowledgeBasesQuery
             ->select(['id', 'name'])
             ->orderBy('name')
             ->get()
             ->map(static fn (KnowledgeBase $row): array => ['id' => (int) $row->id, 'name' => (string) $row->name])
             ->all();
 
-        $authors = Author::query()
+        $authors = $authorsQuery
             ->select(['id', 'name'])
             ->orderBy('name')
             ->get()
             ->map(static fn (Author $row): array => ['id' => (int) $row->id, 'name' => (string) $row->name])
             ->all();
 
-        $categories = Category::query()
+        $categories = $categoriesQuery
             ->select(['id', 'name'])
             ->orderBy('sort_order')
             ->orderBy('id')
@@ -510,11 +552,17 @@ class TaskController extends Controller
             ->map(static fn (Category $row): array => ['id' => (int) $row->id, 'name' => (string) $row->name])
             ->all();
 
-        $distributionChannels = DistributionChannel::query()
+        $distributionChannelsQuery = DistributionChannel::query()
             ->select(['id', 'name', 'domain'])
             ->where('status', 'active')
-            ->orderBy('name')
-            ->get()
+            ->orderBy('name');
+        if ($project instanceof ClientProject) {
+            $distributionChannelsQuery->whereHas('clientProjects', function ($projects) use ($project): void {
+                $projects->whereKey($project->id)
+                    ->wherePivot('status', 'active');
+            });
+        }
+        $distributionChannels = $distributionChannelsQuery->get()
             ->map(static fn (DistributionChannel $row): array => [
                 'id' => (int) $row->id,
                 'name' => (string) $row->name,

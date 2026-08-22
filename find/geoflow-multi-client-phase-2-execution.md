@@ -6,7 +6,7 @@
 >
 > 执行模式：GEOFlow `development` / 资源隔离、队列链路、后台/API 查询和行为回归
 >
-> 当前状态：计划已拆出，尚未执行阶段 2 的业务代码、队列改造或项目过滤切换
+> 当前状态：2A–2D 已执行并完成聚焦验证；2F 已接入项目级监控聚合、任务快照和 API 文章列表过滤；2E 已收口后台/API 文章与任务入口的项目边界。真实 DeepSeek Worker/队列生成已验证；真实远端发布仍待项目渠道凭据，素材、分析等未完成项目化后台入口继续由项目闸门限制。
 
 ## 1. 阶段目标
 
@@ -104,6 +104,12 @@
 
 ### 2E：文章 Service、后台/API 写入与直接归属
 
+- 本轮已先收口后台文章列表、详情、垃圾箱和批量状态/审核/删除/恢复/永久删除入口：存在项目上下文时，文章 ID 查询、统计和写入在数据库查询层限制 `client_project_id`，写操作额外要求项目写权限。无项目 legacy 后台路径保留原兼容语义，普通 operator 的项目表面端到端证据仍待后续补齐。
+- API 文章创建、更新、审核、发布和软删除已将绑定项目传入 `ArticleGeoFlowService`；Service 内部对文章、关联任务读取和 mutation 使用项目 owner 查询，分类/作者/任务引用也按项目校验，跨项目文章 ID 或资源引用会被拒绝，不会被更新或发布。
+- 后台文章列表与编辑表单的任务、作者、分类、标题库、知识库和分发渠道选项已按当前项目上下文过滤；Prompt/AiModel 继续保持平台级资源语义。
+- 文章编辑器标题搜索、AI 生成和图片上传辅助入口也已接入项目上下文；标题库/知识库/文章/编辑器图片库均限制在当前项目，写入图片要求项目写权限。
+- `EnsureProjectScopedSurface` 现在允许普通 operator 在有效项目上下文下进入 `admin.articles.*` 整组路由；任务、素材、分析和其他后台全局页面继续由超级管理员闸门保护，直到各自完成项目化。
+
 **目标**
 
 - 将 `ArticleGeoFlowService`、管理员文章入口和 API 文章入口接入项目授权。
@@ -192,6 +198,64 @@
 不得在阶段 2 产生统一 publication gate、publication batch、客户门户、客户资料接收层、中央站多客户公开承载或项目官网。
 
 ## 5. 后续执行方式
+
+### 2A 执行记录
+
+- 资源解析与校验 owner：`app/Services/GeoFlow/ProjectResourceResolver.php`
+- 回归测试：`tests/Unit/ProjectResourceResolverTest.php`
+- 已覆盖：项目 owner 查询、任务关联知识库/渠道 membership 同项目校验、文章直接引用校验入口、活跃渠道 membership 校验。
+- 验证：通过项目现有 `geoflow-app:latest` Docker 镜像执行 `php artisan test --filter='ProjectResourceResolverTest|ProjectAccessServiceTest'`；6 tests、13 assertions 全部通过，并完成迁移启动。首次 `--build` 因 `public/storage` 路径请求失败，未影响使用现有镜像的测试结果。
+
+### 2B 执行记录（第一批）
+
+- 任务生命周期与监控查询：`app/Services/GeoFlow/TaskLifecycleService.php`、`app/Services/GeoFlow/TaskMonitoringQueryService.php`。
+- API 上下文入口：`app/Http/Controllers/Api/V1/BaseApiController.php`、任务与 Job 控制器；绑定 token 的项目优先于请求体，旧 legacy token 保留无项目的兼容行为。
+- 后台任务入口：`app/Http/Controllers/Admin/TaskController.php`；普通 operator 在有效项目上下文下可进入任务列表、监控、创建和编辑入口，后台写操作仍要求明确项目上下文与项目资源校验。
+- 已覆盖：任务创建保存 `client_project_id`、任务与运行记录按项目查询、详情/更新/删除/启停/入队按项目限制、项目资源引用在事务内校验并在失败时回滚。
+- 验证：Docker 执行 `php artisan test --filter='ApiV1ContractTest|TaskTransactionSafetyTest|ProjectResourceResolverTest|ProjectAccessServiceTest'`；39 tests、204 assertions 全部通过，并完成迁移启动。
+- Worker/Job 执行链路的项目继承与跨项目回归已在 2C/2D 完成并由相邻聚焦回归覆盖。
+
+### 2C 执行记录（第一批）
+
+- Worker owner：`app/Services/GeoFlow/WorkerExecutionService.php`。
+- 已接入：任务项目加载与 active 校验；任务资源引用在执行前复核；标题、作者、分类、知识库和图片选择均限制在任务项目；生成文章写入与任务一致的 `client_project_id`。
+- 已拒绝：跨项目标题库等任务资源引用在调用 AI 前抛出拒绝，不创建文章。
+- 验证：Docker 执行 `php artisan test --filter='WorkerProjectIsolationTest|WorkerExecutionServicePromptTest'`；6 tests、26 assertions 全部通过。
+- 真实 provider 验证：使用临时 DeepSeek OpenAI-compatible 配置（`https://api.deepseek.com/v1`、`deepseek-v4-flash`，key 未写入仓库）执行 Worker 生成；首次 `max_tokens=256` 因 reasoning 占满预算安全返回空正文，调整临时模型预算至 1024 后生成成功。结果：`task_id=2`、`project_id=2`、`article_id=1`，文章正文长度 537，状态 `draft`，文章项目 owner 与任务一致。
+- 真实队列验证：同一项目创建 `task_run` 后直接执行 `ProcessGeoFlowTaskJob`，首次因测试标题耗尽进入业务重试并保留 `last_error`；补充标题并重试后 `run_id=1` 最终 `completed`，生成 `article_id=2`，正文长度 2323，文章 owner 与任务项目一致。过程中修正了 Job eager-load 将 `clientProject` 关系误拼入 tasks 列表的 PostgreSQL 查询错误。
+- 发布分发检查：真实测试项目当前无绑定分发渠道，生成文章保持 `draft/pending`，`DistributionOrchestrator` 不会越过审核和渠道门槛；分发风险、发送重检、渠道删除和并发保护回归通过 28 tests、94 assertions。真实远端发布仍待配置项目渠道后验证。
+- 最终相邻回归：`ApiV1ContractTest|TaskMonitoringMemoryBoundTest|TaskTransactionSafetyTest|WorkerProjectIsolationTest|WorkerExecutionServicePromptTest|DistributionArticleRiskWorkflowTest|DistributionChannelDeletionServiceTest|ProjectScopedArticleSurfaceTest` 共 79 tests、356 assertions 通过；JobQueueService/ArticleGeoFlowService/API/Admin 文章与任务控制器/项目闸门语法检查和 `git diff --check` 通过。
+- 队列执行与发布分发的服务级项目继承、风险门闸和幂等回归已完成；真实远端发布仍受项目渠道凭据这一外部条件约束。平台级 `Prompt`/`AiModel` 仍按既有平台资源规则处理。
+
+### 2D 执行记录
+
+- 队列 owner：`app/Services/GeoFlow/JobQueueService.php`、`app/Jobs/ProcessGeoFlowTaskJob.php`。
+- 已接入：claim、完成、失败、取消、重试和 stale recovery 均从 `task_run -> task` 重新解析项目；绑定项目必须保持 active，暂停/归档项目的 pending/running 工作安全取消；失败回写使用事务锁和运行态幂等门，重复完成/失败/取消不会重复推进状态或重复派发。
+- Job payload 继续只携带 `taskRunId`；TaskRun meta 的业务 payload 采用白名单（source/action/article_id/title_id），剔除可覆盖项目或敏感上下文；follow-up generation 复用同一项目可执行性校验。
+- 失败回调保留原业务状态并报告回调异常，不静默吞错。
+- 回归：Docker 执行 `php artisan test --filter='TaskTransactionSafetyTest'`，14 tests、72 assertions 全部通过；覆盖 after-commit、重试、重复 recovery、暂停项目 claim 取消、错误 taskId 回调隔离、重复完成幂等及 stale 发布失败隔离。相邻 Worker/API 聚焦测试已启动并通过其已输出用例；完整命令输出未在本次终端返回最终汇总，需后续补跑作为阶段证据。
+
+### 2F 执行记录
+
+- 监控查询 owner：`app/Services/GeoFlow/TaskMonitoringQueryService.php`、`app/Services/GeoFlow/HorizonMetricsAdapter.php`。
+- 已接入：后台 `queue_overview` 接受项目上下文并在 `task_runs -> tasks` 查询中按项目过滤；任务快照继续带项目上下文；API 文章分页列表与详情按绑定项目过滤，跨项目 ID 不会读到文章。项目看板下 worker 心跳不暴露其他项目的 `current_job_id`。
+- 查询保持数据库层 owner 条件、分页和批量聚合，没有先加载全表再由 PHP 过滤；运行摘要、最近运行、文章统计、任务统计和 queue overview 共用当前项目范围，并对文章/任务 owner 错配进行双边约束。任务详情中的标题库名称、旧知识库名称和多知识库关联摘要也复用项目上下文进行 owner 过滤。
+- 回归：Docker 执行 `php artisan test --filter='TaskMonitoringMemoryBoundTest'`，6 tests、31 assertions 全部通过；双项目场景验证任务列表、运行记录、项目级队列计数、统计、分页、快照隔离及错配文章不污染统计。相邻 `ApiV1ContractTest|WorkerProjectIsolationTest|WorkerExecutionServicePromptTest|TaskTransactionSafetyTest` 命令已通过其已输出用例。
+- 2F 仍不宣称阶段 2 全部完成：真实远端发布需要项目渠道凭据；素材、分析等尚未完成项目化的后台入口仍由闸门限制。
+
+### 2E/项目文章入口补充回归
+
+- 后台文章入口已要求有效项目上下文；普通 operator 在已授权项目上下文中可访问文章列表，查询只返回当前项目文章，缺少上下文直接返回 403。
+- 任务监控列表与 health-check 只读入口也已要求有效项目上下文，并复用项目过滤后的监控查询；任务创建、编辑、启停和删除仍保持闸门限制。
+- 任务创建/编辑表单的项目资料选项已改为按当前项目过滤（标题库、图库、知识库、作者、分类和渠道 membership）；Prompt 与 AI Model 继续使用平台级资源。
+- 验证：Docker 执行 `php artisan test tests/Feature/ProjectScopedArticleSurfaceTest.php`，3 tests、10 assertions 通过。
+- 现阶段仍限制素材、分析等尚未完成项目化的后台页面，避免通过 UI 入口绕过项目边界。
+
+### 阶段 2 关闭结论
+
+- 阶段 2 的项目归属、跨项目拒绝、任务→文章生成、队列幂等、监控/API/后台文章与任务入口隔离及聚焦回归已完成，满足本阶段内部运营使用的核心验收条件。
+- 真实远端发布未伪造为已完成：当前测试项目未配置渠道凭据，发布验证留待具备明确项目渠道后执行；这不改变阶段 2 的生成、草稿和发布门槛行为。
+- 素材、分析等非阶段 2 核心后台页面继续由项目闸门保护，作为后续项目化工作包处理。
 
 本助手按 `2A → (2B/2C/2E) → 2D → 2F` 执行；并行表示共享 2A 合同但仍分别验证，不表示跳过阶段闸门。每个工作包开始前再次核对当前源码、阶段 1 实际状态和迁移合同；完成后先执行该工作包的最小验证，再更新本文件状态和交付物链接。
 

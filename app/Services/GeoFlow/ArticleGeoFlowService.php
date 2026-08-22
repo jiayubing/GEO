@@ -9,6 +9,7 @@ use App\Models\ArticleImage;
 use App\Models\ArticleReview;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\ClientProject;
 use App\Models\Task;
 use App\Support\GeoFlow\ArticleWorkflow;
 use Illuminate\Support\Facades\DB;
@@ -20,12 +21,15 @@ class ArticleGeoFlowService
         private readonly ArticleWorkflowTransitionService $articleWorkflowTransitionService,
     ) {}
 
-    public function listArticles(int $page = 1, int $perPage = 20, array $filters = []): array
+    public function listArticles(int $page = 1, int $perPage = 20, array $filters = [], ?ClientProject $project = null): array
     {
         $page = max(1, $page);
         $perPage = max(1, min(100, $perPage));
 
         $query = Article::query();
+        if ($project !== null) {
+            $query->where('client_project_id', (int) $project->getKey());
+        }
 
         foreach (['task_id', 'status', 'review_status', 'author_id'] as $key) {
             if (! empty($filters[$key])) {
@@ -64,9 +68,9 @@ class ArticleGeoFlowService
         ];
     }
 
-    public function createArticle(array $data, int $auditAdminId): array
+    public function createArticle(array $data, int $auditAdminId, ?ClientProject $project = null): array
     {
-        $normalized = $this->normalizeCreateInput($data);
+        $normalized = $this->normalizeCreateInput($data, $project);
         $workflowState = ArticleWorkflow::normalizeState(
             $normalized['status'],
             $normalized['review_status']
@@ -82,6 +86,7 @@ class ArticleGeoFlowService
             $fallbackWorkflowState,
             $auditAdminId,
             $workflowState,
+            $project,
         ): array {
             $article = Article::query()->create([
                 'title' => $normalized['title'],
@@ -97,6 +102,7 @@ class ArticleGeoFlowService
                 'review_status' => $fallbackWorkflowState['review_status'],
                 'is_ai_generated' => $normalized['is_ai_generated'],
                 'published_at' => $fallbackWorkflowState['published_at'],
+                'client_project_id' => $project?->getKey(),
             ]);
 
             $this->articleRiskScanner->record($article, 'api_save', $auditAdminId);
@@ -131,14 +137,18 @@ class ArticleGeoFlowService
             throw $this->riskBlockedException($article, $creation['gate_rejection']);
         }
 
-        return $this->getArticle((int) $article->id);
+        return $this->getArticle((int) $article->id, $project);
     }
 
-    public function getArticle(int $articleId): array
+    public function getArticle(int $articleId, ?ClientProject $project = null): array
     {
-        $article = Article::query()
+        $articleQuery = Article::query()
             ->with(['task:id,name', 'author:id,name', 'category:id,name'])
-            ->find($articleId);
+            ->whereKey($articleId);
+        if ($project !== null) {
+            $articleQuery->where('client_project_id', (int) $project->getKey());
+        }
+        $article = $articleQuery->first();
         if (! $article) {
             throw new ApiException('article_not_found', '文章不存在', 404);
         }
@@ -181,10 +191,10 @@ class ArticleGeoFlowService
         ];
     }
 
-    public function updateArticle(int $articleId, array $data, int $auditAdminId): array
+    public function updateArticle(int $articleId, array $data, int $auditAdminId, ?ClientProject $project = null): array
     {
-        $existing = $this->getArticleRecord($articleId);
-        $normalized = $this->normalizeUpdateInput($data, $existing);
+        $existing = $this->getArticleRecord($articleId, $project);
+        $normalized = $this->normalizeUpdateInput($data, $existing, $project);
         if (empty($normalized)) {
             throw new ApiException('validation_failed', '没有可更新的字段', 422);
         }
@@ -196,7 +206,7 @@ class ArticleGeoFlowService
         }
 
         if ($normalized === []) {
-            return $this->getArticle($articleId);
+            return $this->getArticle($articleId, $project);
         }
 
         $riskRelevantFields = ['title', 'excerpt', 'content', 'keywords', 'meta_description'];
@@ -211,15 +221,15 @@ class ArticleGeoFlowService
 
         if ($hasRiskRelevantChanges) {
             DB::transaction(function () use ($articleId, $normalized, $auditAdminId): void {
-                Article::query()->whereKey($articleId)->update($normalized);
-                $article = Article::query()->findOrFail($articleId);
+                $this->scopedArticleQuery($project)->whereKey($articleId)->update($normalized);
+                $article = $this->scopedArticleQuery($project)->findOrFail($articleId);
                 $this->articleRiskScanner->record($article, 'api_save', $auditAdminId);
             });
         } else {
-            Article::query()->whereKey($articleId)->update($normalized);
+            $this->scopedArticleQuery($project)->whereKey($articleId)->update($normalized);
         }
 
-        return $this->getArticle($articleId);
+        return $this->getArticle($articleId, $project);
     }
 
     public function reviewArticle(
@@ -228,8 +238,9 @@ class ArticleGeoFlowService
         string $reviewNote,
         string $riskOverrideReason,
         int $auditAdminId,
+        ?ClientProject $project = null,
     ): array {
-        $article = $this->getArticleRecord($articleId);
+        $article = $this->getArticleRecord($articleId, $project);
         $reviewStatus = trim($reviewStatus);
         $riskOverrideReason = trim($riskOverrideReason);
         if (! in_array($reviewStatus, ['pending', 'approved', 'rejected', 'auto_approved'], true)) {
@@ -249,6 +260,7 @@ class ArticleGeoFlowService
             if (! empty($article['task_id'])) {
                 $taskNeedReview = (int) (Task::query()
                     ->whereKey((int) $article['task_id'])
+                    ->when($project !== null, fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
                     ->value('need_review') ?? 1);
             }
 
@@ -272,10 +284,11 @@ class ArticleGeoFlowService
                 $riskOverrideReason,
                 $fallbackWorkflowState,
                 $reviewStatus,
+                $project,
             ): ?ArticleRiskGateException {
                 try {
                     $this->articleWorkflowTransitionService->transition(
-                        Article::query()->findOrFail($articleId),
+                        $this->scopedArticleQuery($project)->findOrFail($articleId),
                         $workflowState,
                         'api_review',
                         $auditAdminId,
@@ -298,11 +311,11 @@ class ArticleGeoFlowService
             });
 
             if ($gateRejection instanceof ArticleRiskGateException) {
-                throw $this->riskBlockedException(Article::query()->findOrFail($articleId), $gateRejection);
+                throw $this->riskBlockedException($this->scopedArticleQuery($project)->findOrFail($articleId), $gateRejection);
             }
         } else {
-            DB::transaction(function () use ($articleId, $workflowState, $reviewStatus, $reviewNote, $auditAdminId) {
-                Article::query()->whereKey($articleId)->update([
+            DB::transaction(function () use ($articleId, $workflowState, $reviewStatus, $reviewNote, $auditAdminId, $project) {
+                $this->scopedArticleQuery($project)->whereKey($articleId)->update([
                     'status' => $workflowState['status'],
                     'review_status' => $workflowState['review_status'],
                     'published_at' => $workflowState['published_at'],
@@ -318,12 +331,12 @@ class ArticleGeoFlowService
             });
         }
 
-        return $this->getArticle($articleId);
+        return $this->getArticle($articleId, $project);
     }
 
-    public function publishArticle(int $articleId, int $auditAdminId): array
+    public function publishArticle(int $articleId, int $auditAdminId, ?ClientProject $project = null): array
     {
-        $article = Article::query()->whereKey($articleId)->first();
+        $article = $this->scopedArticleQuery($project)->whereKey($articleId)->first();
         if ($article === null) {
             throw new ApiException('article_not_found', '文章不存在', 404);
         }
@@ -349,15 +362,15 @@ class ArticleGeoFlowService
                 },
             );
         } catch (ArticleRiskGateException $exception) {
-            throw $this->riskBlockedException(Article::query()->findOrFail($articleId), $exception);
+            throw $this->riskBlockedException($this->scopedArticleQuery($project)->findOrFail($articleId), $exception);
         }
 
-        return $this->getArticle($articleId);
+        return $this->getArticle($articleId, $project);
     }
 
-    public function trashArticle(int $articleId): array
+    public function trashArticle(int $articleId, ?ClientProject $project = null): array
     {
-        $article = Article::query()->whereKey($articleId)->first();
+        $article = $this->scopedArticleQuery($project)->whereKey($articleId)->first();
         if (! $article) {
             throw new ApiException('article_not_found', '文章不存在', 404);
         }
@@ -370,7 +383,7 @@ class ArticleGeoFlowService
         ];
     }
 
-    private function normalizeCreateInput(array $data): array
+    private function normalizeCreateInput(array $data, ?ClientProject $project = null): array
     {
         $title = trim((string) ($data['title'] ?? ''));
         $content = trim((string) ($data['content'] ?? ''));
@@ -424,9 +437,9 @@ class ArticleGeoFlowService
             $normalized['slug'] = $slug;
         }
 
-        $normalized['category_id'] = $this->normalizeReference(Category::class, $data['category_id'] ?? null, 'category_id', true);
-        $normalized['author_id'] = $this->normalizeReference(Author::class, $data['author_id'] ?? null, 'author_id', true);
-        $normalized['task_id'] = $this->normalizeNullableReference(Task::class, $data['task_id'] ?? null, 'task_id');
+        $normalized['category_id'] = $this->normalizeReference(Category::class, $data['category_id'] ?? null, 'category_id', true, $project);
+        $normalized['author_id'] = $this->normalizeReference(Author::class, $data['author_id'] ?? null, 'author_id', true, $project);
+        $normalized['task_id'] = $this->normalizeNullableReference(Task::class, $data['task_id'] ?? null, 'task_id', $project);
 
         return $normalized;
     }
@@ -434,7 +447,7 @@ class ArticleGeoFlowService
     /**
      * @param  array<string, mixed>  $existing
      */
-    private function normalizeUpdateInput(array $data, array $existing): array
+    private function normalizeUpdateInput(array $data, array $existing, ?ClientProject $project = null): array
     {
         $normalized = [];
         $fieldErrors = [];
@@ -476,15 +489,15 @@ class ArticleGeoFlowService
         }
 
         if (array_key_exists('category_id', $data)) {
-            $normalized['category_id'] = $this->normalizeReference(Category::class, $data['category_id'], 'category_id', true);
+            $normalized['category_id'] = $this->normalizeReference(Category::class, $data['category_id'], 'category_id', true, $project);
         }
 
         if (array_key_exists('author_id', $data)) {
-            $normalized['author_id'] = $this->normalizeReference(Author::class, $data['author_id'], 'author_id', true);
+            $normalized['author_id'] = $this->normalizeReference(Author::class, $data['author_id'], 'author_id', true, $project);
         }
 
         if (array_key_exists('task_id', $data)) {
-            $normalized['task_id'] = $this->normalizeNullableReference(Task::class, $data['task_id'], 'task_id');
+            $normalized['task_id'] = $this->normalizeNullableReference(Task::class, $data['task_id'], 'task_id', $project);
         }
 
         if (array_key_exists('slug', $data)) {
@@ -509,9 +522,9 @@ class ArticleGeoFlowService
     /**
      * @return array<string, mixed>
      */
-    private function getArticleRecord(int $articleId): array
+    private function getArticleRecord(int $articleId, ?ClientProject $project = null): array
     {
-        $article = Article::query()->whereKey($articleId)->first();
+        $article = $this->scopedArticleQuery($project)->whereKey($articleId)->first();
         if (! $article) {
             throw new ApiException('article_not_found', '文章不存在', 404);
         }
@@ -519,12 +532,22 @@ class ArticleGeoFlowService
         return $article->getAttributes();
     }
 
-    private function normalizeNullableReference(string $modelClass, mixed $value, string $field): ?int
+    private function scopedArticleQuery(?ClientProject $project = null)
     {
-        return $this->normalizeReference($modelClass, $value, $field, false);
+        $query = Article::query();
+        if ($project !== null) {
+            $query->where('client_project_id', (int) $project->getKey());
+        }
+
+        return $query;
     }
 
-    private function normalizeReference(string $modelClass, mixed $value, string $field, bool $required = false): ?int
+    private function normalizeNullableReference(string $modelClass, mixed $value, string $field, ?ClientProject $project = null): ?int
+    {
+        return $this->normalizeReference($modelClass, $value, $field, false, $project);
+    }
+
+    private function normalizeReference(string $modelClass, mixed $value, string $field, bool $required = false, ?ClientProject $project = null): ?int
     {
         if ($value === null || $value === '' || (int) $value <= 0) {
             if ($required) {
@@ -537,7 +560,12 @@ class ArticleGeoFlowService
         }
 
         $id = (int) $value;
-        if (! $modelClass::query()->whereKey($id)->exists()) {
+        $query = $modelClass::query()->whereKey($id);
+        $table = (new $modelClass)->getTable();
+        if ($project !== null && \Illuminate\Support\Facades\Schema::hasColumn($table, 'client_project_id')) {
+            $query->where('client_project_id', (int) $project->getKey());
+        }
+        if (! $query->exists()) {
             throw new ApiException('validation_failed', '参数校验失败', 422, [
                 'field_errors' => [$field => "{$field} 对应资源不存在"],
             ]);

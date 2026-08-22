@@ -9,6 +9,7 @@ use App\Models\AiModel;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\ClientProject;
 use App\Models\DistributionChannel;
 use App\Models\KnowledgeBase;
 use App\Models\ManualPublication;
@@ -19,6 +20,7 @@ use App\Models\TitleLibrary;
 use App\Services\GeoFlow\ArticleRiskScanner;
 use App\Services\GeoFlow\ArticleWorkflowTransitionService;
 use App\Services\GeoFlow\DistributionOrchestrator;
+use App\Services\GeoFlow\ProjectAccessService;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\ArticleWorkflow;
 use Illuminate\Database\QueryException;
@@ -43,6 +45,7 @@ class ArticleController extends Controller
         private readonly DistributionOrchestrator $distributionOrchestrator,
         private readonly ArticleRiskScanner $articleRiskScanner,
         private readonly ArticleWorkflowTransitionService $articleWorkflowTransitionService,
+        private readonly ProjectAccessService $projectAccess,
     ) {}
 
     /**
@@ -50,8 +53,9 @@ class ArticleController extends Controller
      */
     public function index(Request $request): View
     {
+        $project = $this->projectContext($request);
         $filters = $this->buildFilters($request);
-        $articles = $this->queryArticles($filters);
+        $articles = $this->queryArticles($filters, $project);
         $isTrashView = (bool) ($filters['trashed'] ?? false);
 
         return view('admin.articles.index', [
@@ -61,11 +65,11 @@ class ArticleController extends Controller
             'activeMenu' => 'articles',
             'adminSiteName' => AdminWeb::siteName(),
             'articles' => $articles,
-            'stats' => $isTrashView ? $this->loadTrashStats() : $this->loadStats(),
+            'stats' => $isTrashView ? $this->loadTrashStats($project) : $this->loadStats($project),
             'filters' => $filters,
-            'tasks' => $this->loadTaskOptions(),
-            'authors' => $this->loadAuthorOptions(),
-            'distributionChannels' => $this->loadDistributionChannelOptions(),
+            'tasks' => $this->loadTaskOptions($project),
+            'authors' => $this->loadAuthorOptions($project),
+            'distributionChannels' => $this->loadDistributionChannelOptions($project),
             'articlesI18n' => $this->articlesI18n(),
             'isTrashView' => $isTrashView,
             'trashI18n' => $this->trashI18n(),
@@ -79,6 +83,7 @@ class ArticleController extends Controller
      */
     public function batchUpdateStatus(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $riskOverrideReason = $this->validateRiskOverrideReason($request);
         $articleIds = $this->extractArticleIds($request);
         if (empty($articleIds)) {
@@ -86,7 +91,7 @@ class ArticleController extends Controller
         }
 
         try {
-            return $this->handleBatchUpdateStatus($request, $articleIds, $riskOverrideReason);
+            return $this->handleBatchUpdateStatus($request, $articleIds, $riskOverrideReason, $project);
         } catch (Throwable $e) {
             return back()->withErrors($e->getMessage());
         }
@@ -97,6 +102,7 @@ class ArticleController extends Controller
      */
     public function batchUpdateReview(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $riskOverrideReason = $this->validateRiskOverrideReason($request);
         $articleIds = $this->extractArticleIds($request);
         if (empty($articleIds)) {
@@ -104,7 +110,7 @@ class ArticleController extends Controller
         }
 
         try {
-            return $this->handleBatchUpdateReview($request, $articleIds, $riskOverrideReason);
+            return $this->handleBatchUpdateReview($request, $articleIds, $riskOverrideReason, $project);
         } catch (Throwable $e) {
             return back()->withErrors($e->getMessage());
         }
@@ -115,13 +121,14 @@ class ArticleController extends Controller
      */
     public function batchDelete(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $articleIds = $this->extractArticleIds($request);
         if (empty($articleIds)) {
             return back()->withErrors(__('admin.articles.message.select_articles'));
         }
 
         try {
-            return $this->handleBatchDelete($articleIds);
+            return $this->handleBatchDelete($articleIds, $project);
         } catch (Throwable $e) {
             return back()->withErrors($e->getMessage());
         }
@@ -132,13 +139,14 @@ class ArticleController extends Controller
      */
     public function batchRestore(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $articleIds = $this->extractArticleIds($request);
         if (empty($articleIds)) {
             return back()->withErrors(__('admin.articles.message.select_articles'));
         }
 
         try {
-            $count = Article::onlyTrashed()->whereIn('id', $articleIds)->restore();
+            $count = $this->scopedArticles($project, true)->whereIn('id', $articleIds)->restore();
 
             return back()->with('message', __('admin.articles.trash.message.restore_success', ['count' => $count]));
         } catch (Throwable $e) {
@@ -151,13 +159,14 @@ class ArticleController extends Controller
      */
     public function batchForceDelete(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $articleIds = $this->extractArticleIds($request);
         if (empty($articleIds)) {
             return back()->withErrors(__('admin.articles.message.select_articles'));
         }
 
         try {
-            $models = Article::onlyTrashed()->whereIn('id', $articleIds)->get();
+            $models = $this->scopedArticles($project, true)->whereIn('id', $articleIds)->get();
             $models->each(function (Article $article): void {
                 $article->forceDelete();
             });
@@ -171,10 +180,11 @@ class ArticleController extends Controller
     /**
      * 清空文章垃圾箱（全部永久删除）。
      */
-    public function emptyTrash(): RedirectResponse
+    public function emptyTrash(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         try {
-            $models = Article::onlyTrashed()->get();
+            $models = $this->scopedArticles($project, true)->get();
             if ($models->isEmpty()) {
                 return back()->with('message', __('admin.articles.trash.message.empty_already'));
             }
@@ -192,9 +202,9 @@ class ArticleController extends Controller
     /**
      * 恢复单篇已删除文章。
      */
-    public function restore(int $articleId): RedirectResponse
+    public function restore(Request $request, int $articleId): RedirectResponse
     {
-        $article = Article::onlyTrashed()->whereKey($articleId)->firstOrFail();
+        $article = $this->scopedArticles($this->projectContext($request, true), true)->whereKey($articleId)->firstOrFail();
         $article->restore();
 
         return back()->with('message', __('admin.articles.trash.message.restore_success', ['count' => 1]));
@@ -203,9 +213,9 @@ class ArticleController extends Controller
     /**
      * 永久删除单篇已删除文章。
      */
-    public function forceDelete(int $articleId): RedirectResponse
+    public function forceDelete(Request $request, int $articleId): RedirectResponse
     {
-        $article = Article::onlyTrashed()->whereKey($articleId)->firstOrFail();
+        $article = $this->scopedArticles($this->projectContext($request, true), true)->whereKey($articleId)->firstOrFail();
         $article->forceDelete();
 
         return back()->with('message', __('admin.articles.trash.message.delete_success', ['count' => 1]));
@@ -216,6 +226,7 @@ class ArticleController extends Controller
      */
     public function create(Request $request): View
     {
+        $this->projectContext($request, true);
         return view('admin.articles.form', [
             'pageTitle' => __('admin.article_create.page_title'),
             'activeMenu' => 'articles',
@@ -224,7 +235,7 @@ class ArticleController extends Controller
             'articleId' => null,
             'articleForm' => null,
             'riskScan' => null,
-            'formOptions' => $this->loadFormOptions(true),
+            'formOptions' => $this->loadFormOptions(true, $this->projectContext($request)),
             'canCreateManualPublication' => $this->canCreateManualPublication($request),
         ]);
     }
@@ -234,6 +245,7 @@ class ArticleController extends Controller
      */
     public function store(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $payload = $this->validateArticleForm($request, false);
         $workflowState = ArticleWorkflow::normalizeState(
             $payload['status'],
@@ -243,7 +255,7 @@ class ArticleController extends Controller
 
         try {
             $adminId = $this->authenticatedAdminId($request);
-            $gateRejection = DB::transaction(function () use (&$article, $payload, $workflowState, $adminId): ?ArticleRiskGateException {
+            $gateRejection = DB::transaction(function () use (&$article, $payload, $workflowState, $adminId, $project): ?ArticleRiskGateException {
                 $sourceTitle = null;
                 if ((int) ($payload['source_title_id'] ?? 0) > 0) {
                     $candidate = Title::query()
@@ -271,6 +283,7 @@ class ArticleController extends Controller
                     'is_ai_generated' => (bool) ($payload['is_ai_generated'] ?? false),
                     'is_hot' => (bool) ($payload['is_hot'] ?? false),
                     'is_featured' => (bool) ($payload['is_featured'] ?? false),
+                    'client_project_id' => $project?->getKey(),
                 ]);
 
                 if ($sourceTitle) {
@@ -323,7 +336,8 @@ class ArticleController extends Controller
      */
     public function edit(Request $request, int $articleId): View|RedirectResponse
     {
-        $article = Article::query()
+        $project = $this->projectContext($request);
+        $article = $this->scopedArticles($project)
             ->with(['task:id,name', 'author:id,name', 'category:id,name'])
             ->whereKey($articleId)
             ->firstOrFail();
@@ -351,7 +365,7 @@ class ArticleController extends Controller
                 'is_featured' => (bool) ($article->is_featured ?? false),
             ],
             'riskScan' => $this->riskScanViewData($article),
-            'formOptions' => $this->loadFormOptions(false),
+            'formOptions' => $this->loadFormOptions(false, $project),
             'canCreateManualPublication' => $this->canCreateManualPublication($request),
         ]);
     }
@@ -369,9 +383,10 @@ class ArticleController extends Controller
      */
     public function recheckRisk(Request $request, int $articleId): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $adminId = $this->authenticatedAdminId($request);
-        $downgraded = DB::transaction(function () use ($articleId, $adminId): bool {
-            $article = Article::query()->whereKey($articleId)->lockForUpdate()->firstOrFail();
+        $downgraded = DB::transaction(function () use ($articleId, $adminId, $project): bool {
+            $article = $this->scopedArticles($project)->whereKey($articleId)->lockForUpdate()->firstOrFail();
             $scan = $article->latestRiskScan()->first();
 
             if ($scan === null || ! $this->articleRiskScanner->isFresh($article, $scan)) {
@@ -408,8 +423,9 @@ class ArticleController extends Controller
      */
     public function update(Request $request, int $articleId): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $payload = $this->validateArticleForm($request, true);
-        $article = Article::query()->whereKey($articleId)->firstOrFail();
+        $article = $this->scopedArticles($project)->whereKey($articleId)->firstOrFail();
 
         $workflowState = ArticleWorkflow::normalizeState(
             $payload['status'],
@@ -419,8 +435,8 @@ class ArticleController extends Controller
 
         try {
             $adminId = $this->authenticatedAdminId($request);
-            $gateRejection = DB::transaction(function () use (&$article, $payload, $workflowState, $adminId): ?ArticleRiskGateException {
-                $lockedArticle = Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
+            $gateRejection = DB::transaction(function () use (&$article, $payload, $workflowState, $adminId, $project): ?ArticleRiskGateException {
+                $lockedArticle = $this->scopedArticles($project)->whereKey($article->id)->lockForUpdate()->firstOrFail();
                 $slug = $payload['title'] === $lockedArticle->title
                     ? $lockedArticle->slug
                     : ArticleWorkflow::generateUniqueSlug($payload['title'], (int) $lockedArticle->id);
@@ -558,11 +574,9 @@ class ArticleController extends Controller
      *     trashed: bool
      * }  $filters
      */
-    private function queryArticles(array $filters): LengthAwarePaginator
+    private function queryArticles(array $filters, ?ClientProject $project = null): LengthAwarePaginator
     {
-        $query = ($filters['trashed'] ?? false)
-            ? Article::onlyTrashed()
-            : Article::query();
+        $query = $this->scopedArticles($project, (bool) ($filters['trashed'] ?? false));
 
         $query->with([
             'task:id,name,need_review',
@@ -642,9 +656,9 @@ class ArticleController extends Controller
     /**
      * @return array{total: int, published: int, draft: int, pending_review: int, observed: int, today: int}
      */
-    private function loadStats(): array
+    private function loadStats(?ClientProject $project = null): array
     {
-        $baseQuery = Article::query();
+        $baseQuery = $this->scopedArticles($project);
 
         return [
             'total' => (clone $baseQuery)->count(),
@@ -659,21 +673,22 @@ class ArticleController extends Controller
     /**
      * @return array{trashed_total: int}
      */
-    private function loadTrashStats(): array
+    private function loadTrashStats(?ClientProject $project = null): array
     {
         return [
-            'trashed_total' => Article::onlyTrashed()->count(),
+            'trashed_total' => $this->scopedArticles($project, true)->count(),
         ];
     }
 
     /**
      * @return array<int, array{id: int, name: string, domain: string, status: string}>
      */
-    private function loadDistributionChannelOptions(): array
+    private function loadDistributionChannelOptions(?ClientProject $project = null): array
     {
         try {
             return DistributionChannel::query()
                 ->select(['id', 'name', 'domain', 'status'])
+                ->when($project !== null, fn ($query) => $query->whereHas('clientProjects', fn ($projects) => $projects->whereKey((int) $project->getKey())->wherePivot('status', 'active')))
                 ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
                 ->orderBy('name')
                 ->get()
@@ -715,11 +730,12 @@ class ArticleController extends Controller
     /**
      * @return array<int, array{id: int, name: string}>
      */
-    private function loadTaskOptions(): array
+    private function loadTaskOptions(?ClientProject $project = null): array
     {
         try {
             return Task::query()
                 ->select(['id', 'name'])
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
                 ->orderBy('name')
                 ->get()
                 ->map(fn (Task $task): array => [
@@ -735,11 +751,12 @@ class ArticleController extends Controller
     /**
      * @return array<int, array{id: int, name: string}>
      */
-    private function loadAuthorOptions(): array
+    private function loadAuthorOptions(?ClientProject $project = null): array
     {
         try {
             return Author::query()
                 ->select(['id', 'name'])
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
                 ->orderBy('name')
                 ->get()
                 ->map(fn (Author $author): array => [
@@ -762,10 +779,10 @@ class ArticleController extends Controller
      *     ai_models: array<int, array{id: int, name: string, model_id: string}>
      * }
      */
-    private function loadFormOptions(bool $includeAssistantOptions): array
+    private function loadFormOptions(bool $includeAssistantOptions, ?ClientProject $project = null): array
     {
         $categories = [];
-        $authors = $this->loadAuthorOptions();
+        $authors = $this->loadAuthorOptions($project);
         $titleLibraries = [];
         $knowledgeBases = [];
         $contentPrompts = [];
@@ -774,6 +791,7 @@ class ArticleController extends Controller
         try {
             $categories = Category::query()
                 ->select(['id', 'name'])
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
                 ->orderBy('name')
                 ->get()
                 ->map(fn (Category $category): array => [
@@ -799,6 +817,7 @@ class ArticleController extends Controller
         try {
             $titleLibraries = TitleLibrary::query()
                 ->select(['id', 'name'])
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
                 ->withCount('titles')
                 ->orderBy('name')
                 ->get()
@@ -815,6 +834,7 @@ class ArticleController extends Controller
         try {
             $knowledgeBases = KnowledgeBase::query()
                 ->select(['id', 'name'])
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', (int) $project->getKey()))
                 ->whereHas('chunks')
                 ->orderBy('name')
                 ->get()
@@ -1009,14 +1029,14 @@ class ArticleController extends Controller
     /**
      * @param  array<int, int>  $articleIds
      */
-    private function handleBatchUpdateStatus(Request $request, array $articleIds, ?string $riskOverrideReason): RedirectResponse
+    private function handleBatchUpdateStatus(Request $request, array $articleIds, ?string $riskOverrideReason, ?ClientProject $project): RedirectResponse
     {
         $newStatus = (string) $request->input('new_status', '');
         if (! in_array($newStatus, ['draft', 'published', 'private'], true)) {
             return back()->withErrors(__('admin.articles.message.select_status'));
         }
 
-        $articles = Article::query()
+        $articles = $this->scopedArticles($project)
             ->select(['id', 'review_status', 'published_at'])
             ->whereIn('id', $articleIds)
             ->get();
@@ -1045,7 +1065,7 @@ class ArticleController extends Controller
                         $rejectedWorkflowState,
                     );
                 } else {
-                    Article::query()->whereKey((int) $article->id)->update([
+                    $this->scopedArticles($project)->whereKey((int) $article->id)->update([
                         'status' => $workflowState['status'],
                         'review_status' => $workflowState['review_status'],
                         'published_at' => $workflowState['published_at'],
@@ -1073,14 +1093,14 @@ class ArticleController extends Controller
     /**
      * @param  array<int, int>  $articleIds
      */
-    private function handleBatchUpdateReview(Request $request, array $articleIds, ?string $riskOverrideReason): RedirectResponse
+    private function handleBatchUpdateReview(Request $request, array $articleIds, ?string $riskOverrideReason, ?ClientProject $project): RedirectResponse
     {
         $reviewStatus = (string) $request->input('review_status', '');
         if (! in_array($reviewStatus, ['pending', 'approved', 'rejected', 'auto_approved'], true)) {
             return back()->withErrors(__('admin.articles.message.select_review'));
         }
 
-        $articles = Article::query()
+        $articles = $this->scopedArticles($project)
             ->with(['task:id,need_review'])
             ->select(['id', 'status', 'review_status', 'published_at', 'task_id'])
             ->whereIn('id', $articleIds)
@@ -1116,7 +1136,7 @@ class ArticleController extends Controller
                         $rejectedWorkflowState,
                     );
                 } else {
-                    Article::query()->whereKey((int) $article->id)->update([
+                    $this->scopedArticles($project)->whereKey((int) $article->id)->update([
                         'status' => $workflowState['status'],
                         'review_status' => $workflowState['review_status'],
                         'published_at' => $workflowState['published_at'],
@@ -1144,14 +1164,39 @@ class ArticleController extends Controller
     /**
      * @param  array<int, int>  $articleIds
      */
-    private function handleBatchDelete(array $articleIds): RedirectResponse
+    private function handleBatchDelete(array $articleIds, ?ClientProject $project): RedirectResponse
     {
-        $articles = Article::query()->whereIn('id', $articleIds)->get();
+        $articles = $this->scopedArticles($project)->whereIn('id', $articleIds)->get();
         foreach ($articles as $article) {
-            Article::query()->whereKey((int) $article->id)->delete();
+            $this->scopedArticles($project)->whereKey((int) $article->id)->delete();
         }
 
-        return back()->with('message', __('admin.articles.message.batch_delete_success', ['count' => count($articleIds)]));
+        return back()->with('message', __('admin.articles.message.batch_delete_success', ['count' => $articles->count()]));
+    }
+
+    private function scopedArticles(?ClientProject $project = null, bool $trashed = false)
+    {
+        $query = $trashed ? Article::onlyTrashed() : Article::query();
+        if ($project !== null) {
+            $query->where('client_project_id', (int) $project->getKey());
+        }
+
+        return $query;
+    }
+
+    private function projectContext(Request $request, bool $write = false): ?ClientProject
+    {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof Admin, 401);
+        $project = $request->attributes->get('project_context')
+            ?: $this->projectAccess->resolveContext($request, $admin);
+        if ($project instanceof ClientProject) {
+            $write
+                ? $this->projectAccess->requireWrite($admin, $project)
+                : $this->projectAccess->requireRead($admin, $project);
+        }
+
+        return $project instanceof ClientProject ? $project : null;
     }
 
     /**

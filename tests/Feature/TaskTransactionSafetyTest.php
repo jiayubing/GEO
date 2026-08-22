@@ -78,6 +78,37 @@ class TaskTransactionSafetyTest extends TestCase
         $this->assertSame(1, $broadcastCount);
     }
 
+    public function test_job_callbacks_ignore_wrong_task_and_duplicate_completion(): void
+    {
+        Queue::fake();
+        $first = Task::query()->create(['name' => 'Callback owner', 'status' => 'active', 'schedule_enabled' => 1]);
+        $other = Task::query()->create(['name' => 'Wrong callback task', 'status' => 'active', 'schedule_enabled' => 1]);
+        $run = TaskRun::query()->create(['task_id' => $first->id, 'status' => 'running', 'started_at' => now(), 'meta' => []]);
+        $queue = app(JobQueueService::class);
+
+        $queue->completeJob((int) $run->id, (int) $other->id, null, 10, ['action' => 'generate_draft']);
+        $this->assertSame('running', $run->fresh()->status);
+
+        $queue->completeJob((int) $run->id, (int) $first->id, null, 10, ['action' => 'generate_draft']);
+        $queue->completeJob((int) $run->id, (int) $first->id, null, 10, ['action' => 'generate_draft']);
+        $this->assertSame('completed', $run->fresh()->status);
+        $this->assertSame(1, TaskRun::query()->where('task_id', $first->id)->where('status', 'completed')->count());
+    }
+
+    public function test_claim_cancels_work_when_bound_project_is_suspended(): void
+    {
+        Queue::fake();
+        $client = \App\Models\Client::query()->create(['name' => 'Queue client', 'slug' => 'queue-client']);
+        $project = \App\Models\ClientProject::query()->create([
+            'client_id' => $client->id, 'name' => 'Suspended project', 'slug' => 'suspended-project', 'status' => 'suspended',
+        ]);
+        $task = Task::query()->create(['name' => 'Suspended task', 'status' => 'active', 'schedule_enabled' => 1, 'client_project_id' => $project->id]);
+        $run = TaskRun::query()->create(['task_id' => $task->id, 'status' => 'pending', 'meta' => []]);
+
+        $this->assertNull(app(JobQueueService::class)->claimPendingJobById((int) $run->id, 'worker:test'));
+        $this->assertSame('cancelled', $run->fresh()->status);
+    }
+
     public function test_recovery_republishes_a_due_stale_pending_run(): void
     {
         Queue::fake();

@@ -21,6 +21,7 @@ class TaskController extends BaseApiController
      */
     public function index(Request $request, TaskLifecycleService $tasks): JsonResponse
     {
+        $project = $this->project($request);
         $statusQuery = $request->query('status');
         $searchQuery = $request->query('search');
 
@@ -30,7 +31,8 @@ class TaskController extends BaseApiController
             [
                 'status' => is_string($statusQuery) ? trim($statusQuery) : null,
                 'search' => is_string($searchQuery) ? trim($searchQuery) : null,
-            ]
+            ],
+            $project
         );
 
         return $this->success($request, $data);
@@ -43,10 +45,12 @@ class TaskController extends BaseApiController
      */
     public function store(Request $request, TaskLifecycleService $tasks): JsonResponse
     {
+        $project = $this->project($request, true);
+        $payload = $request->except('project_id');
         return IdempotencyService::executeJson(
             $request,
             'POST /tasks',
-            fn (): JsonResponse => $this->success($request, $tasks->createTask($request->all()), 201),
+            fn (): JsonResponse => $this->success($request, $tasks->createTask($payload, $project), 201),
         );
     }
 
@@ -55,7 +59,7 @@ class TaskController extends BaseApiController
      */
     public function show(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
-        return $this->success($request, $tasks->getTask($task));
+        return $this->success($request, $tasks->getTask($task, $this->project($request)));
     }
 
     /**
@@ -65,10 +69,12 @@ class TaskController extends BaseApiController
      */
     public function update(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
+        $project = $this->project($request, true);
+        $payload = $request->except('project_id');
         return IdempotencyService::executeJson(
             $request,
             'PATCH /tasks/{id}',
-            fn (): JsonResponse => $this->success($request, $tasks->updateTask($task, $request->all())),
+            fn (): JsonResponse => $this->success($request, $tasks->updateTask($task, $payload, $project)),
         );
     }
 
@@ -77,7 +83,7 @@ class TaskController extends BaseApiController
      */
     public function destroy(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
-        return $this->success($request, $tasks->deleteTask($task));
+        return $this->success($request, $tasks->deleteTask($task, $this->project($request, true)));
     }
 
     /**
@@ -87,12 +93,13 @@ class TaskController extends BaseApiController
      */
     public function start(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
+        $project = $this->project($request, true);
         $enqueueNow = ! empty($request->input('enqueue_now'));
 
         return IdempotencyService::executeJson(
             $request,
             'POST /tasks/{id}/start',
-            fn (): JsonResponse => $this->success($request, $tasks->startTask($task, $enqueueNow)),
+            fn (): JsonResponse => $this->success($request, $tasks->startTask($task, $enqueueNow, $project)),
         );
     }
 
@@ -103,10 +110,11 @@ class TaskController extends BaseApiController
      */
     public function stop(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
+        $project = $this->project($request, true);
         return IdempotencyService::executeJson(
             $request,
             'POST /tasks/{id}/stop',
-            fn (): JsonResponse => $this->success($request, $tasks->stopTask($task)),
+            fn (): JsonResponse => $this->success($request, $tasks->stopTask($task, $project)),
         );
     }
 
@@ -117,15 +125,17 @@ class TaskController extends BaseApiController
      */
     public function enqueue(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
+        $project = $this->project($request, true);
         $body = $request->all();
         $jobType = trim((string) ($body['job_type'] ?? 'generate_article'));
         $payload = $body;
         unset($payload['job_type']);
+        unset($payload['project_id']);
 
         return IdempotencyService::executeJson(
             $request,
             'POST /tasks/{id}/enqueue',
-            fn (): JsonResponse => $this->success($request, $tasks->enqueueTask($task, $jobType, $payload), 201),
+            fn (): JsonResponse => $this->success($request, $tasks->enqueueTask($task, $jobType, $payload, $project), 201),
         );
     }
 
@@ -136,13 +146,15 @@ class TaskController extends BaseApiController
      */
     public function jobs(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
+        $project = $this->project($request);
         $status = $request->query('status');
         $statusStr = is_string($status) ? trim($status) : '';
 
         return $this->success($request, $tasks->listTaskJobs(
             $task,
             $statusStr !== '' ? $statusStr : null,
-            $request->integer('limit', 20)
+            $request->integer('limit', 20),
+            $project
         ));
     }
 }

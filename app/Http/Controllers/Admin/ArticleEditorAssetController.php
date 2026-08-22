@@ -5,9 +5,12 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Article;
 use App\Models\ArticleImage;
+use App\Models\Admin;
+use App\Models\ClientProject;
 use App\Models\Image;
 use App\Models\ImageLibrary;
 use App\Services\GeoFlow\ManagedImageFileService;
+use App\Services\GeoFlow\ProjectAccessService;
 use App\Support\Admin\WeChatArticleHtmlExporter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,7 +22,10 @@ class ArticleEditorAssetController extends Controller
 {
     private const EDITOR_LIBRARY_NAME = '文章编辑器图片';
 
-    public function __construct(private readonly ManagedImageFileService $managedImages) {}
+    public function __construct(
+        private readonly ManagedImageFileService $managedImages,
+        private readonly ProjectAccessService $projectAccess,
+    ) {}
 
     public function exportWeChatHtml(Request $request, WeChatArticleHtmlExporter $exporter): JsonResponse
     {
@@ -45,7 +51,11 @@ class ArticleEditorAssetController extends Controller
 
     public function uploadImage(Request $request, int $articleId): JsonResponse
     {
-        $article = Article::query()->whereKey($articleId)->firstOrFail();
+        $project = $this->projectContext($request);
+        $article = Article::query()
+            ->whereKey($articleId)
+            ->where('client_project_id', (int) $project->getKey())
+            ->firstOrFail();
 
         $payload = $request->validate([
             'image' => [
@@ -69,7 +79,7 @@ class ArticleEditorAssetController extends Controller
         try {
             $result = $this->managedImages->withUploadedImagePathLock($uploadedFile, function () use ($article, $uploadedFile, $alt, $position, &$storedPath): array {
                 return DB::transaction(function () use ($article, $uploadedFile, $alt, $position, &$storedPath): array {
-                    $library = $this->editorImageLibrary();
+                    $library = $this->editorImageLibrary($project);
                     $stored = $this->managedImages->storeUploadedImage($uploadedFile);
                     $storedPath = $stored['file_path'];
 
@@ -134,15 +144,28 @@ class ArticleEditorAssetController extends Controller
         ]);
     }
 
-    private function editorImageLibrary(): ImageLibrary
+    private function editorImageLibrary(ClientProject $project): ImageLibrary
     {
         return ImageLibrary::query()->firstOrCreate([
             'name' => self::EDITOR_LIBRARY_NAME,
+            'client_project_id' => (int) $project->getKey(),
         ], [
             'description' => __('admin.article_editor.image_library_description'),
             'image_count' => 0,
             'used_task_count' => 0,
         ]);
+    }
+
+    private function projectContext(Request $request): ClientProject
+    {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof Admin, 401);
+        $project = $request->attributes->get('project_context')
+            ?: $this->projectAccess->resolveContext($request, $admin);
+        abort_unless($project instanceof ClientProject, 403, 'project_target_required');
+        $this->projectAccess->requireWrite($admin, $project);
+
+        return $project;
     }
 
     private function refreshImageLibraryCount(int $libraryId): void

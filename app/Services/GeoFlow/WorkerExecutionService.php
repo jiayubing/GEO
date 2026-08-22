@@ -8,6 +8,7 @@ use App\Models\Article;
 use App\Models\ArticleImage;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\ClientProject;
 use App\Models\Image;
 use App\Models\KnowledgeBase;
 use App\Models\KnowledgeChunk;
@@ -40,6 +41,7 @@ class WorkerExecutionService
         private readonly ArticleWorkflowTransitionService $articleWorkflowTransitionService,
         private readonly ArticleContentPromptRenderer $articleContentPromptRenderer,
         private readonly ArticleContentGenerationService $articleContentGenerationService,
+        private readonly ProjectResourceResolver $projectResources,
     ) {}
 
     /**
@@ -53,11 +55,23 @@ class WorkerExecutionService
             throw new RuntimeException('任务不存在');
         }
 
+        $project = null;
+        if ((int) ($task->client_project_id ?? 0) > 0) {
+            $project = ClientProject::query()
+                ->whereKey((int) $task->client_project_id)
+                ->where('status', 'active')
+                ->first();
+            if (! $project) {
+                throw new RuntimeException('任务所属项目不存在');
+            }
+            $this->projectResources->requireTaskReferences($task, $project);
+        }
+
         if (($task->status ?? 'paused') !== 'active' || (int) ($task->schedule_enabled ?? 1) !== 1) {
             throw new RuntimeException('任务未激活');
         }
 
-        $publishResult = $this->publishDueDraftArticle($task);
+        $publishResult = $this->publishDueDraftArticle($task, $project);
         if ($publishResult !== null) {
             $this->distributionOrchestrator->enqueueForArticle((int) $publishResult['article_id']);
 
@@ -78,18 +92,18 @@ class WorkerExecutionService
             ];
         }
 
-        $titleRow = $this->pickTitle($task);
-        $author = $this->pickAuthor($task);
-        $category = $this->pickCategory($task);
+        $titleRow = $this->pickTitle($task, $project);
+        $author = $this->pickAuthor($task, $project);
+        $category = $this->pickCategory($task, $project);
         $prompt = $task->prompt_id ? Prompt::query()->find((int) $task->prompt_id) : null;
 
         $keyword = (string) ($titleRow->keyword ?? '');
-        $knowledgeContext = $this->resolveKnowledgeContext($task, (string) $titleRow->title, $keyword);
+        $knowledgeContext = $this->resolveKnowledgeContext($task, (string) $titleRow->title, $keyword, $project);
         $contentPrompt = $this->buildContentPrompt((string) $titleRow->title, $keyword, $prompt?->content, $knowledgeContext);
         $generation = $this->generateContentWithModelSelection($task, $contentPrompt);
         $aiModel = $generation['model'];
         $generatedContent = $generation['content'];
-        $imageResult = $this->insertTaskImagesIntoContent($task, $generatedContent);
+        $imageResult = $this->insertTaskImagesIntoContent($task, $generatedContent, $project);
         $content = $imageResult['content'];
         $selectedImages = $imageResult['images'];
         $excerpt = $this->buildExcerpt($content);
@@ -99,11 +113,13 @@ class WorkerExecutionService
             'published_at' => null,
         ];
 
-        $articleId = DB::transaction(function () use ($task, $titleRow, $author, $category, $keyword, $content, $excerpt, $workflow, $selectedImages): int {
+        $articleId = DB::transaction(function () use ($task, $project, $titleRow, $author, $category, $keyword, $content, $excerpt, $workflow, $selectedImages): int {
             $freshTask = Task::query()
                 ->whereKey((int) $task->id)
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))
+                ->when($project === null, fn ($query) => $query->whereNull('client_project_id'))
                 ->lockForUpdate()
-                ->first(['id', 'status', 'schedule_enabled', 'created_count', 'draft_limit', 'article_limit', 'publish_interval', 'next_publish_at']);
+                ->first(['id', 'status', 'schedule_enabled', 'created_count', 'draft_limit', 'article_limit', 'publish_interval', 'next_publish_at', 'client_project_id']);
             if (! $freshTask || ($freshTask->status ?? 'paused') !== 'active' || (int) ($freshTask->schedule_enabled ?? 1) !== 1) {
                 throw new RuntimeException('任务未激活');
             }
@@ -121,6 +137,7 @@ class WorkerExecutionService
                 'category_id' => $category?->id,
                 'author_id' => $author?->id,
                 'task_id' => (int) $task->id,
+                'client_project_id' => $project?->getKey(),
                 'source_title_id' => (int) $titleRow->id,
                 'original_keyword' => $keyword,
                 'keywords' => $keyword,
@@ -205,17 +222,19 @@ class WorkerExecutionService
      *
      * @return array{article_id:int, title:string, message:string, meta:array<string,mixed>}|null
      */
-    private function publishDueDraftArticle(Task $task): ?array
+    private function publishDueDraftArticle(Task $task, ?ClientProject $project = null): ?array
     {
         if ($task->next_publish_at !== null && $task->next_publish_at->greaterThan(now())) {
             return null;
         }
 
-        return DB::transaction(function () use ($task): ?array {
+        return DB::transaction(function () use ($task, $project): ?array {
             $freshTask = Task::query()
                 ->whereKey((int) $task->id)
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))
+                ->when($project === null, fn ($query) => $query->whereNull('client_project_id'))
                 ->lockForUpdate()
-                ->first(['id', 'status', 'schedule_enabled', 'publish_interval', 'next_publish_at', 'publish_scope']);
+                ->first(['id', 'status', 'schedule_enabled', 'publish_interval', 'next_publish_at', 'publish_scope', 'client_project_id']);
             if (! $freshTask || ($freshTask->status ?? 'paused') !== 'active' || (int) ($freshTask->schedule_enabled ?? 1) !== 1) {
                 throw new RuntimeException('任务未激活');
             }
@@ -227,6 +246,8 @@ class WorkerExecutionService
             /** @var Article|null $article */
             $article = Article::query()
                 ->where('task_id', (int) $freshTask->id)
+                ->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))
+                ->when($project === null, fn ($query) => $query->whereNull('client_project_id'))
                 ->where('status', 'draft')
                 ->whereIn('review_status', ['approved', 'auto_approved'])
                 ->whereNull('deleted_at')
@@ -290,6 +311,8 @@ class WorkerExecutionService
         $draftLimit = max(1, (int) ($task->draft_limit ?? 10));
         $draftQuery = Article::query()
             ->where('task_id', (int) $task->id)
+            ->when((int) ($task->client_project_id ?? 0) > 0, fn ($query) => $query->where('client_project_id', (int) $task->client_project_id))
+            ->when((int) ($task->client_project_id ?? 0) <= 0, fn ($query) => $query->whereNull('client_project_id'))
             ->where('status', 'draft')
             ->whereNull('deleted_at');
         // PostgreSQL 不允许在 count(*) 聚合查询上追加 FOR UPDATE。
@@ -457,14 +480,15 @@ class WorkerExecutionService
         return '智能模型切换已尝试：'.implode('；', $summaries).'。最终失败：'.$lastMessage;
     }
 
-    private function pickTitle(Task $task): Title
+    private function pickTitle(Task $task, ?ClientProject $project = null): Title
     {
         $libraryId = (int) ($task->title_library_id ?? 0);
         if ($libraryId <= 0) {
             throw new RuntimeException('任务未配置标题库');
         }
 
-        $query = Title::query()->where('library_id', $libraryId);
+        $query = Title::query()->where('library_id', $libraryId)
+            ->when($project !== null, fn ($query) => $query->whereHas('library', fn ($library) => $library->where('client_project_id', $project->getKey())));
         if ((int) ($task->is_loop ?? 0) !== 1) {
             $query->where(function ($builder): void {
                 $builder->whereNull('used_count')->orWhere('used_count', '<=', 0);
@@ -484,19 +508,23 @@ class WorkerExecutionService
         return $title;
     }
 
-    private function pickAuthor(Task $task): Author
+    private function pickAuthor(Task $task, ?ClientProject $project = null): Author
     {
         $authorId = (int) ($task->custom_author_id ?: $task->author_id);
         if ($authorId > 0) {
-            $author = Author::query()->find($authorId);
+            $author = Author::query()->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))->find($authorId);
             if ($author) {
                 return $author;
             }
         }
 
-        $author = Author::query()->orderBy('id')->first();
+        $author = Author::query()->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))->orderBy('id')->first();
         if ($author) {
             return $author;
+        }
+
+        if ($project !== null) {
+            throw new RuntimeException('当前项目没有可用作者');
         }
 
         return Author::query()->firstOrCreate(
@@ -505,13 +533,13 @@ class WorkerExecutionService
         );
     }
 
-    private function pickCategory(Task $task): ?Category
+    private function pickCategory(Task $task, ?ClientProject $project = null): ?Category
     {
         if (($task->category_mode ?? 'smart') === 'fixed' && (int) ($task->fixed_category_id ?? 0) > 0) {
-            return Category::query()->find((int) $task->fixed_category_id);
+            return Category::query()->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))->find((int) $task->fixed_category_id);
         }
 
-        return Category::query()->orderBy('sort_order')->orderBy('id')->first();
+        return Category::query()->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))->orderBy('sort_order')->orderBy('id')->first();
     }
 
     /**
@@ -525,7 +553,7 @@ class WorkerExecutionService
     /**
      * 按任务配置检索知识库上下文并回填到 {{Knowledge}}。
      */
-    private function resolveKnowledgeContext(Task $task, string $title, string $keyword): string
+    private function resolveKnowledgeContext(Task $task, string $title, string $keyword, ?ClientProject $project = null): string
     {
         $knowledgeBaseIds = $this->resolveTaskKnowledgeBaseIds($task);
         if ($knowledgeBaseIds === []) {
@@ -534,6 +562,7 @@ class WorkerExecutionService
 
         $knowledgeBases = KnowledgeBase::query()
             ->whereIn('id', $knowledgeBaseIds)
+            ->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))
             ->select(['id'])
             ->selectRaw('SUBSTR(content, 1, ?) AS content_excerpt', [2400])
             ->get()
@@ -716,7 +745,7 @@ class WorkerExecutionService
      *
      * @return array{content:string,images:list<Image>}
      */
-    private function insertTaskImagesIntoContent(Task $task, string $content): array
+    private function insertTaskImagesIntoContent(Task $task, string $content, ?ClientProject $project = null): array
     {
         $libraryId = (int) ($task->image_library_id ?? 0);
         $imageCount = max(0, (int) ($task->image_count ?? 0));
@@ -727,6 +756,7 @@ class WorkerExecutionService
         /** @var list<Image> $images */
         $images = Image::query()
             ->where('library_id', $libraryId)
+            ->when($project !== null, fn ($query) => $query->whereHas('library', fn ($library) => $library->where('client_project_id', $project->getKey())))
             ->inRandomOrder()
             ->limit($imageCount)
             ->get(['id', 'file_path', 'original_name'])

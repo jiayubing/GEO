@@ -7,6 +7,7 @@ use App\Models\AiModel;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\ClientProject;
 use App\Models\ImageLibrary;
 use App\Models\KnowledgeBase;
 use App\Models\Prompt;
@@ -39,7 +40,8 @@ class TaskLifecycleService
     public function __construct(
         private JobQueueService $queueService,
         private TaskMonitoringQueryService $taskMonitoringQueryService,
-        private TaskRealtimeBroadcastService $taskRealtimeBroadcastService
+        private TaskRealtimeBroadcastService $taskRealtimeBroadcastService,
+        private ProjectResourceResolver $projectResources
     ) {}
 
     /**
@@ -53,9 +55,9 @@ class TaskLifecycleService
      *     pagination:array{page:int,per_page:int,total:int,total_pages:int}
      * }
      */
-    public function listTasks(int $page = 1, int $perPage = 20, array $filters = []): array
+    public function listTasks(int $page = 1, int $perPage = 20, array $filters = [], ?ClientProject $project = null): array
     {
-        return $this->taskMonitoringQueryService->listTasksPaginated($page, $perPage, $filters);
+        return $this->taskMonitoringQueryService->listTasksPaginated($page, $perPage, $filters, $project);
     }
 
     /**
@@ -70,11 +72,11 @@ class TaskLifecycleService
      * @param  array<string,mixed>  $data
      * @return array<string,mixed> 新建后的任务详情（getTask 结构）
      */
-    public function createTask(array $data): array
+    public function createTask(array $data, ?ClientProject $project = null): array
     {
         $normalized = $this->normalizeTaskInput($data, false);
 
-        $taskId = DB::transaction(function () use ($normalized): int {
+        $taskId = DB::transaction(function () use ($normalized, $project): int {
             $task = Task::query()->create([
                 'name' => $normalized['name'],
                 'title_library_id' => $normalized['title_library_id'],
@@ -98,7 +100,12 @@ class TaskLifecycleService
                 'knowledge_base_id' => $normalized['knowledge_base_id'],
                 'category_mode' => $normalized['category_mode'],
                 'fixed_category_id' => $normalized['fixed_category_id'],
+                'client_project_id' => $project?->getKey(),
             ]);
+
+            if ($project !== null) {
+                $this->projectResources->requireTaskReferences($task, $project);
+            }
 
             $taskId = (int) $task->id;
             $this->syncTaskKnowledgeBases($taskId, $normalized['knowledge_base_ids'] ?? []);
@@ -120,7 +127,7 @@ class TaskLifecycleService
             return $taskId;
         });
 
-        $task = $this->getTask($taskId);
+        $task = $this->getTask($taskId, $project);
         $this->broadcastOverviewAfterCommit();
 
         return $task;
@@ -133,10 +140,10 @@ class TaskLifecycleService
      *
      * @throws ApiException 当任务不存在时抛出 404
      */
-    public function getTask(int $taskId): array
+    public function getTask(int $taskId, ?ClientProject $project = null): array
     {
         try {
-            return $this->taskMonitoringQueryService->getTaskMonitoringDetail($taskId);
+            return $this->taskMonitoringQueryService->getTaskMonitoringDetail($taskId, $project);
         } catch (ModelNotFoundException) {
             throw new ApiException('task_not_found', '任务不存在', 404);
         }
@@ -152,9 +159,9 @@ class TaskLifecycleService
      * @param  array<string,mixed>  $data
      * @return array<string,mixed>
      */
-    public function updateTask(int $taskId, array $data): array
+    public function updateTask(int $taskId, array $data, ?ClientProject $project = null): array
     {
-        $this->ensureTaskExists($taskId);
+        $this->ensureTaskExists($taskId, $project);
         $normalized = $this->normalizeTaskInput($data, true);
         if (empty($normalized)) {
             throw new ApiException('validation_failed', '没有可更新的字段', 422);
@@ -166,9 +173,11 @@ class TaskLifecycleService
         $knowledgeBaseIds = $knowledgeBaseIdsProvided ? $normalized['knowledge_base_ids'] : [];
         unset($normalized['knowledge_base_ids']);
 
-        DB::transaction(function () use ($normalized, $knowledgeBaseIdsProvided, $knowledgeBaseIds, $status, $taskId): void {
+        DB::transaction(function () use ($normalized, $knowledgeBaseIdsProvided, $knowledgeBaseIds, $status, $taskId, $project): void {
             if (! empty($normalized)) {
-                Task::query()->whereKey($taskId)->update($normalized);
+                $query = Task::query()->whereKey($taskId);
+                $this->scopeProject($query, $project);
+                $query->update($normalized);
             }
 
             if ($knowledgeBaseIdsProvided) {
@@ -176,14 +185,18 @@ class TaskLifecycleService
             }
 
             if ($status === 'active') {
-                $this->activateTask($taskId, false);
+                $this->activateTask($taskId, false, $project);
             } elseif ($status === 'paused') {
-                $this->pauseTask($taskId, '任务已暂停');
+                $this->pauseTask($taskId, '任务已暂停', $project);
+            }
+
+            if ($project !== null) {
+                $this->projectResources->requireTaskReferences($this->taskForProject($taskId, $project), $project);
             }
 
         });
 
-        $task = $this->getTask($taskId);
+        $task = $this->getTask($taskId, $project);
         $this->broadcastOverviewAfterCommit();
 
         return $task;
@@ -194,16 +207,23 @@ class TaskLifecycleService
      *
      * @return array{id:int,name:string,deleted:bool}
      */
-    public function deleteTask(int $taskId): array
+    public function deleteTask(int $taskId, ?ClientProject $project = null): array
     {
-        $task = Task::query()->whereKey($taskId)->first(['id', 'name']);
+        $taskQuery = Task::query()->whereKey($taskId);
+        $this->scopeProject($taskQuery, $project);
+        $task = $taskQuery->first(['id', 'name']);
         if (! $task) {
             throw new ApiException('task_not_found', '任务不存在', 404);
         }
 
         $taskName = (string) $task->name;
 
-        DB::transaction(function () use ($taskId): void {
+        DB::transaction(function () use ($taskId, $project): void {
+            $taskQuery = Task::query()->whereKey($taskId);
+            $this->scopeProject($taskQuery, $project);
+            if (! $taskQuery->exists()) {
+                throw new ApiException('task_not_found', '任务不存在', 404);
+            }
             Article::query()
                 ->where('task_id', $taskId)
                 ->whereNull('deleted_at')
@@ -225,7 +245,9 @@ class TaskLifecycleService
                     'updated_at' => now(),
                 ]);
 
-            Task::query()->whereKey($taskId)->delete();
+            $deleteQuery = Task::query()->whereKey($taskId);
+            $this->scopeProject($deleteQuery, $project);
+            $deleteQuery->delete();
         });
 
         $this->broadcastOverviewAfterCommit();
@@ -243,13 +265,13 @@ class TaskLifecycleService
      * @param  bool  $enqueueNow  是否立即投递一条执行任务（手动启动场景）
      * @return array<string,mixed>
      */
-    public function startTask(int $taskId, bool $enqueueNow = false): array
+    public function startTask(int $taskId, bool $enqueueNow = false, ?ClientProject $project = null): array
     {
-        $this->ensureTaskExists($taskId);
+        $this->ensureTaskExists($taskId, $project);
         $jobId = DB::transaction(function () use ($taskId, $enqueueNow): ?int {
             // 手动“立即执行”场景下，不把 next_run_at 强行置为 now，
             // 避免与手动入队叠加导致一次点击触发两次执行。
-            $this->activateTask($taskId, ! $enqueueNow);
+            $this->activateTask($taskId, ! $enqueueNow, $project);
             $jobId = null;
             if ($enqueueNow) {
                 $jobId = $this->queueService->enqueueTaskJob($taskId, 'generate_article', ['source' => 'api_manual_start']);
@@ -264,7 +286,7 @@ class TaskLifecycleService
             return $jobId;
         });
 
-        $task = $this->getTask($taskId);
+        $task = $this->getTask($taskId, $project);
         if ($jobId !== null) {
             $task['started_job_id'] = $jobId;
         }
@@ -283,11 +305,11 @@ class TaskLifecycleService
      *
      * @return array<string,mixed>
      */
-    public function stopTask(int $taskId): array
+    public function stopTask(int $taskId, ?ClientProject $project = null): array
     {
-        $this->ensureTaskExists($taskId);
+        $this->ensureTaskExists($taskId, $project);
         [$cancelledJobs, $runningJobs] = DB::transaction(function () use ($taskId): array {
-            $cancelledJobs = $this->pauseTask($taskId, '任务已暂停');
+            $cancelledJobs = $this->pauseTask($taskId, '任务已暂停', $project);
             $runningJobs = TaskRun::query()
                 ->where('task_id', $taskId)
                 ->where('status', 'running')
@@ -295,7 +317,7 @@ class TaskLifecycleService
 
             return [$cancelledJobs, $runningJobs];
         });
-        $task = $this->getTask($taskId);
+        $task = $this->getTask($taskId, $project);
         $task['cancelled_jobs'] = $cancelledJobs;
         $task['running_jobs'] = $runningJobs;
         $this->broadcastOverviewAfterCommit();
@@ -314,9 +336,11 @@ class TaskLifecycleService
      *
      * @throws ApiException 任务不存在、任务未启用、或已有进行中任务时抛出
      */
-    public function enqueueTask(int $taskId, string $jobType = 'generate_article', array $payload = []): array
+    public function enqueueTask(int $taskId, string $jobType = 'generate_article', array $payload = [], ?ClientProject $project = null): array
     {
-        $task = Task::query()->find($taskId, ['id', 'status', 'schedule_enabled']);
+        $taskQuery = Task::query()->whereKey($taskId);
+        $this->scopeProject($taskQuery, $project);
+        $task = $taskQuery->first(['id', 'status', 'schedule_enabled']);
         if (! $task) {
             throw new ApiException('task_not_found', '任务不存在', 404);
         }
@@ -344,9 +368,9 @@ class TaskLifecycleService
      * @param  int  $limit  返回数量上限（1~100）
      * @return array{items:list<array<string,mixed>>}
      */
-    public function listTaskJobs(int $taskId, ?string $status = null, int $limit = 20): array
+    public function listTaskJobs(int $taskId, ?string $status = null, int $limit = 20, ?ClientProject $project = null): array
     {
-        $this->ensureTaskExists($taskId);
+        $this->ensureTaskExists($taskId, $project);
         $limit = max(1, min(100, $limit));
 
         $q = TaskRun::query()
@@ -371,9 +395,13 @@ class TaskLifecycleService
      *
      * @throws ApiException 当执行记录不存在时抛出 404
      */
-    public function getJob(int $jobId): array
+    public function getJob(int $jobId, ?ClientProject $project = null): array
     {
-        $run = TaskRun::query()->find($jobId);
+        $runQuery = TaskRun::query()->whereKey($jobId);
+        if ($project !== null) {
+            $runQuery->whereHas('task', fn ($query) => $query->where('client_project_id', $project->getKey()));
+        }
+        $run = $runQuery->first();
         if (! $run) {
             throw new ApiException('job_not_found', 'Job 不存在', 404);
         }
@@ -618,9 +646,11 @@ class TaskLifecycleService
      *
      * @param  bool  $resetNextRun  true 时 next_run_at 立即置为 now（手动启动场景）
      */
-    private function activateTask(int $taskId, bool $resetNextRun): void
+    private function activateTask(int $taskId, bool $resetNextRun, ?ClientProject $project = null): void
     {
-        $task = Task::query()->whereKey($taskId)->first(['id', 'next_run_at']);
+        $taskQuery = Task::query()->whereKey($taskId);
+        $this->scopeProject($taskQuery, $project);
+        $task = $taskQuery->first(['id', 'next_run_at']);
         $updates = [
             'status' => 'active',
             'schedule_enabled' => 1,
@@ -631,7 +661,9 @@ class TaskLifecycleService
             $updates['next_run_at'] = now();
         }
 
-        Task::query()->whereKey($taskId)->update($updates);
+        $updateQuery = Task::query()->whereKey($taskId);
+        $this->scopeProject($updateQuery, $project);
+        $updateQuery->update($updates);
         $this->queueService->initializeTaskSchedule($taskId);
     }
 
@@ -640,17 +672,24 @@ class TaskLifecycleService
      *
      * @return int 被取消的 pending 记录数
      */
-    private function pauseTask(int $taskId, string $reason): int
+    private function pauseTask(int $taskId, string $reason, ?ClientProject $project = null): int
     {
-        Task::query()->whereKey($taskId)->update([
+        $taskQuery = Task::query()->whereKey($taskId);
+        $this->scopeProject($taskQuery, $project);
+        $taskQuery->update([
             'status' => 'paused',
             'schedule_enabled' => 0,
             'next_run_at' => null,
             'updated_at' => now(),
         ]);
 
-        return TaskRun::query()
-            ->where('task_id', $taskId)
+        $runs = TaskRun::query()
+            ->where('task_id', $taskId);
+        if ($project !== null) {
+            $runs->whereHas('task', fn ($query) => $query->where('client_project_id', $project->getKey()));
+        }
+
+        return $runs
             ->where('status', 'pending')
             ->update([
                 'status' => 'cancelled',
@@ -664,10 +703,27 @@ class TaskLifecycleService
      *
      * @throws ApiException
      */
-    private function ensureTaskExists(int $taskId): void
+    private function ensureTaskExists(int $taskId, ?ClientProject $project = null): void
     {
-        if (! Task::query()->whereKey($taskId)->exists()) {
+        $query = Task::query()->whereKey($taskId);
+        $this->scopeProject($query, $project);
+        if (! $query->exists()) {
             throw new ApiException('task_not_found', '任务不存在', 404);
+        }
+    }
+
+    private function taskForProject(int $taskId, ClientProject $project): Task
+    {
+        $query = Task::query()->whereKey($taskId);
+        $this->scopeProject($query, $project);
+
+        return $query->firstOrFail();
+    }
+
+    private function scopeProject($query, ?ClientProject $project): void
+    {
+        if ($project !== null) {
+            $query->where('client_project_id', (int) $project->getKey());
         }
     }
 

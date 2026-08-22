@@ -4,12 +4,14 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AiModel;
+use App\Models\ClientProject;
 use App\Models\KnowledgeBase;
 use App\Models\Prompt;
 use App\Models\Title;
 use App\Services\GeoFlow\ArticleContentGenerationService;
 use App\Services\GeoFlow\ArticleContentPromptRenderer;
 use App\Services\GeoFlow\KnowledgeRetrievalService;
+use App\Services\GeoFlow\ProjectAccessService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -27,10 +29,12 @@ final class ArticleEditorAssistantController extends Controller
         private readonly ArticleContentPromptRenderer $promptRenderer,
         private readonly ArticleContentGenerationService $generationService,
         private readonly KnowledgeRetrievalService $knowledgeRetrievalService,
+        private readonly ProjectAccessService $projectAccess,
     ) {}
 
     public function titles(Request $request): JsonResponse
     {
+        $project = $this->projectContext($request);
         $validated = $request->validate([
             'library_id' => ['nullable', 'integer', 'min:1', 'exists:title_libraries,id'],
             'search' => ['nullable', 'string', 'max:200'],
@@ -44,6 +48,7 @@ final class ArticleEditorAssistantController extends Controller
         $titles = Title::query()
             ->select(['id', 'library_id', 'title', 'keyword', 'is_ai_generated', 'used_count', 'usage_count'])
             ->with('library:id,name')
+            ->whereHas('library', fn (Builder $query) => $query->where('client_project_id', (int) $project->getKey()))
             ->when(isset($validated['library_id']), fn (Builder $query): Builder => $query->where('library_id', (int) $validated['library_id']))
             ->when($usage === 'unused', fn (Builder $query): Builder => $query->where(function (Builder $query): void {
                 $query->whereNull('used_count')->orWhere('used_count', '<=', 0);
@@ -80,6 +85,7 @@ final class ArticleEditorAssistantController extends Controller
 
     public function generate(Request $request): Response
     {
+        $project = $this->projectContext($request);
         $validated = $request->validate([
             'title' => ['required', 'string', 'max:500'],
             'keyword' => ['nullable', 'string', 'max:200'],
@@ -103,6 +109,7 @@ final class ArticleEditorAssistantController extends Controller
 
         $knowledgeBase = KnowledgeBase::query()
             ->whereKey((int) $validated['knowledge_base_id'])
+            ->where('client_project_id', (int) $project->getKey())
             ->firstOrFail(['id']);
         $prompt = Prompt::query()->whereKey((int) $validated['prompt_id'])->where('type', 'content')->firstOrFail();
         $aiModel = AiModel::query()
@@ -169,5 +176,17 @@ final class ArticleEditorAssistantController extends Controller
         $response->headers->set('X-Accel-Buffering', 'no');
 
         return $response;
+    }
+
+    private function projectContext(Request $request): ClientProject
+    {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof \App\Models\Admin, 401);
+        $project = $request->attributes->get('project_context')
+            ?: $this->projectAccess->resolveContext($request, $admin);
+        abort_unless($project instanceof ClientProject, 403, 'project_target_required');
+        $this->projectAccess->requireRead($admin, $project);
+
+        return $project;
     }
 }
