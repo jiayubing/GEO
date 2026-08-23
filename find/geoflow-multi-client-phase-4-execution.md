@@ -6,7 +6,7 @@
 >
 > 执行模式：GEOFlow `development` / 目标级发布批次、审批、本站发布、远程渠道和人工工单
 >
-> 当前状态：工作包拆分完成，尚未开始阶段 4 生产代码实施。
+> 当前状态：4A–4H 代码实施与容器验证完成；尚未执行真实远程渠道写入、人工工单创建或本站内部试点。
 
 ## 1. 阶段目标
 
@@ -237,3 +237,14 @@
 
 本助手按 `4A → 4B → 4C → 4D → (4E/4F/4G) → 4H` 执行。每个工作包开始前先核对阶段 3 的 gate、现有 `article_distributions`/`manual_publications` 状态 owner、渠道能力和当前迁移状态；完成后先运行该包最小验证，再更新本文件和总计划。真实远程写操作必须另行确认具体目标、凭据、回读和回滚边界；在条件不齐时只完成本地、mock、contract 或 read-only 验证。
 
+## 6. 实际执行记录
+
+- 4A–4H 已按顺序完成，代码位于 `app/Models/PublicationBatch*.php`、`app/Services/GeoFlow/PublicationBatch*.php`、`app/Http/Controllers/Admin/PublicationBatchController.php` 及对应迁移/枚举。
+- GeoFlow 应用容器 PHP 8.4 可用；publication batch migration 已执行，publication batch 后台路由共 9 条可发现。
+- 关键容器验证通过：batch schema/status、文章工作流、分发 publisher、人工发布核心测试；Pint、PHP lint、`git diff --check` 通过。
+- 真实外部副作用仍未执行：没有远程渠道写入、人工工单创建或本站试点。
+- 当前运行数据为 2 个 active 项目，但文章数为 0、approved 文章数为 0、active channel membership 为 0、active persona/account 为 0；因此本站试点需要先准备一篇项目内已审核文章。
+- `AdminManualPublicationsTest` 的 4 个 project-context 403/session failures 属于既有验证缺口，未由阶段 4 代码引入。
+- 后续补齐了后台批次创建/详情操作页及本站执行入口；使用 `Live Project` 的文章 #3 完成一次单项目、单文章 local 试点：batch #1 从 `draft → submitted → approved → completed`，item 从 `pending → approved → local_published`，文章从 `draft → published`。
+- 公开回读已确认：`/article/evnsdoya` 返回文章标题“GEOFlow 内部试点文章”，批次结果快照只含文章 ID、状态和发布时间；未执行 channel/manual 外部副作用。
+- 内容管理页已增加“发布批次”按钮，指向当前项目上下文下的批次创建页；入口仍受后台认证和项目权限保护。

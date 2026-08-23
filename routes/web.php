@@ -36,6 +36,7 @@ use App\Http\Controllers\Admin\ManualPublicationController;
 use App\Http\Controllers\Admin\ManualPublicationSettingsController;
 use App\Http\Controllers\Admin\MaterialsController;
 use App\Http\Controllers\Admin\ProjectContextController;
+use App\Http\Controllers\Admin\PublicationBatchController;
 use App\Http\Controllers\Admin\SecuritySettingsController;
 use App\Http\Controllers\Admin\SiteSettingsController;
 use App\Http\Controllers\Admin\SiteThemeReplicationController;
@@ -228,6 +229,22 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
             Route::get('{manualPublicationId}/edit', [ManualPublicationController::class, 'edit'])->name('edit')->whereNumber('manualPublicationId');
             Route::put('{manualPublicationId}', [ManualPublicationController::class, 'update'])->name('update')->whereNumber('manualPublicationId');
             Route::post('{manualPublicationId}/transition', [ManualPublicationController::class, 'transition'])->name('transition')->whereNumber('manualPublicationId');
+        });
+
+        // 项目上下文内的运营发布批次编排；不触发本站、渠道或人工执行。
+        Route::prefix('publication-batches')->name('publication-batches.')->group(function (): void {
+            Route::get('/', [PublicationBatchController::class, 'index'])->name('index');
+            Route::get('create', [PublicationBatchController::class, 'create'])->name('create');
+            Route::post('/', [PublicationBatchController::class, 'store'])->name('store');
+            Route::get('{batchId}', [PublicationBatchController::class, 'show'])->name('show')->whereNumber('batchId');
+            Route::put('{batchId}', [PublicationBatchController::class, 'update'])->name('update')->whereNumber('batchId');
+            Route::post('{batchId}/submit', [PublicationBatchController::class, 'submit'])->name('submit')->whereNumber('batchId');
+            Route::post('{batchId}/items/{itemId}/execute-local', [PublicationBatchController::class, 'executeLocal'])->name('items.execute-local')->whereNumber('batchId')->whereNumber('itemId');
+            Route::post('{batchId}/approve', [PublicationBatchController::class, 'approve'])->name('approve')->whereNumber('batchId');
+            Route::post('{batchId}/return', [PublicationBatchController::class, 'returnBatch'])->name('return')->whereNumber('batchId');
+            Route::post('{batchId}/reject', [PublicationBatchController::class, 'reject'])->name('reject')->whereNumber('batchId');
+            Route::post('{batchId}/items/{itemId}/approve', [PublicationBatchController::class, 'approveItem'])->name('items.approve')->whereNumber('batchId')->whereNumber('itemId');
+            Route::post('{batchId}/items/{itemId}/reject', [PublicationBatchController::class, 'rejectItem'])->name('items.reject')->whereNumber('batchId')->whereNumber('itemId');
         });
 
         // 栏目管理（保持 geo_admin/categories 路径语义）

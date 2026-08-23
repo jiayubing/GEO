@@ -140,6 +140,11 @@ class ManualPublication extends Model
         return $this->hasMany(ManualPublicationTransition::class);
     }
 
+    public function publicationBatchItems(): HasMany
+    {
+        return $this->hasMany(PublicationBatchItem::class, 'manual_publication_id');
+    }
+
     public function personaDisplayName(): ?string
     {
         $snapshotName = trim((string) data_get($this->identity_snapshot, 'persona.name'));

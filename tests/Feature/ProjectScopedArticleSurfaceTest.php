@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\ClientProjectMemberRole;
 use App\Enums\ClientProjectMemberStatus;
+use App\Enums\PublicationBatchStatus;
 use App\Models\Admin;
 use App\Models\Article;
 use App\Models\Author;
@@ -11,6 +12,7 @@ use App\Models\Category;
 use App\Models\Client;
 use App\Models\ClientProject;
 use App\Models\ClientProjectMember;
+use App\Models\PublicationBatch;
 use App\Models\Task;
 use App\Services\GeoFlow\ProjectAccessService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -96,6 +98,40 @@ class ProjectScopedArticleSurfaceTest extends TestCase
             ->get(route('admin.tasks.create'))
             ->assertOk()
             ->assertSee(__('admin.task_create.page_heading'));
+    }
+
+    public function test_operator_batch_list_is_scoped_to_selected_project_and_can_filter_status(): void
+    {
+        [$admin, $projectA] = $this->operatorWithProject('batch-list');
+        $projectB = $this->project('batch-list-b');
+        $visible = PublicationBatch::query()->create([
+            'client_project_id' => $projectA->id,
+            'status' => PublicationBatchStatus::SUBMITTED,
+            'idempotency_key' => 'batch-list-visible',
+            'created_by_admin_id' => $admin->id,
+        ]);
+        $draft = PublicationBatch::query()->create([
+            'client_project_id' => $projectA->id,
+            'status' => PublicationBatchStatus::DRAFT,
+            'idempotency_key' => 'batch-list-draft',
+            'created_by_admin_id' => $admin->id,
+        ]);
+        $hidden = PublicationBatch::query()->create([
+            'client_project_id' => $projectB->id,
+            'status' => PublicationBatchStatus::SUBMITTED,
+            'idempotency_key' => 'batch-list-hidden',
+            'created_by_admin_id' => $admin->id,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $projectA->id])
+            ->get(route('admin.publication-batches.index', ['status' => 'submitted']))
+            ->assertOk()
+            ->assertSee('#'.$visible->id)
+            ->assertSee('待审核')
+            ->assertDontSee('#'.$draft->id)
+            ->assertDontSee(route('admin.publication-batches.show', ['batchId' => $draft->id]))
+            ->assertDontSee(route('admin.publication-batches.show', ['batchId' => $hidden->id]));
     }
 
     public function test_admin_can_read_and_switch_project_context_from_backend_header_api(): void

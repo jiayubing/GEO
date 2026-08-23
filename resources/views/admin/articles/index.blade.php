@@ -102,6 +102,13 @@
                         <i data-lucide="send" class="w-4 h-4 mr-2"></i>
                         {{ __('admin.manual_publications.nav') }}
                     </a>
+                    <a href="{{ route('admin.publication-batches.index') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                        批次列表
+                    </a>
+                    <a href="{{ route('admin.publication-batches.create') }}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-emerald-600 hover:bg-emerald-700">
+                        <i data-lucide="layers" class="w-4 h-4 mr-2"></i>
+                        新建批次
+                    </a>
                     <a href="{{ $categoryManageUrl }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                         <i data-lucide="folder" class="w-4 h-4 mr-2"></i>
                         {{ __('admin.button.category_manage') }}

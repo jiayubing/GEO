@@ -27,7 +27,8 @@ final class EnsureProjectScopedSurface
         // 素材、分析和其他后台页面仍保留超级管理员闸门，直到各自完成项目化。
         if (! $admin->isSuperAdmin()) {
             $projectSurface = $request->routeIs('admin.articles.*')
-                || $request->routeIs('admin.tasks.*');
+                || $request->routeIs('admin.tasks.*')
+                || $request->routeIs('admin.publication-batches.*');
             // Keep the pre-project admin surface usable during migration. Once any
             // project exists, operators must provide an explicit project context.
             $legacySurface = $project === null

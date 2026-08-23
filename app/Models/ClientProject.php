@@ -73,4 +73,14 @@ class ClientProject extends Model
     {
         return $this->belongsTo(Admin::class, 'updated_by_admin_id');
     }
+
+    public function publicationBatches(): HasMany
+    {
+        return $this->hasMany(PublicationBatch::class);
+    }
+
+    public function publicationBatchItems(): HasMany
+    {
+        return $this->hasMany(PublicationBatchItem::class);
+    }
 }
