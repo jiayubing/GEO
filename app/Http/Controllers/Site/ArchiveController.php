@@ -24,27 +24,29 @@ class ArchiveController extends Controller
         $siteDescription = (string) ($map['site_description'] ?? config('geoflow.site_description', ''));
         $siteKeywords = (string) ($map['site_keywords'] ?? config('geoflow.site_keywords', ''));
 
-        $driver = DB::getDriverName();
-        $archives = [];
-        if ($driver === 'pgsql') {
-            $rows = DB::select("
-                SELECT
-                    EXTRACT(YEAR FROM COALESCE(published_at, created_at))::int AS y,
-                    LPAD(EXTRACT(MONTH FROM COALESCE(published_at, created_at))::text, 2, '0') AS m,
-                    COUNT(*)::int AS cnt
-                FROM articles
-                WHERE status = 'published' AND deleted_at IS NULL
-                GROUP BY y, m
-                ORDER BY y DESC, m DESC
-            ");
-            foreach ($rows as $row) {
-                $archives[] = [
-                    'year' => (string) ($row->y ?? ''),
-                    'month' => (string) ($row->m ?? ''),
-                    'count' => (int) ($row->cnt ?? 0),
-                ];
-            }
+        $articlesTable = (new Article)->getTable();
+        $period = 'COALESCE('.$articlesTable.'.published_at, '.$articlesTable.'.created_at)';
+        if (DB::getDriverName() === 'pgsql') {
+            $year = 'EXTRACT(YEAR FROM '.$period.')::int';
+            $month = "LPAD(EXTRACT(MONTH FROM {$period})::text, 2, '0')";
+        } else {
+            $year = "strftime('%Y', {$period})";
+            $month = "strftime('%m', {$period})";
         }
+
+        $rows = Article::query()
+            ->centralSitePublic()
+            ->toBase()
+            ->selectRaw($year.' AS y, '.$month.' AS m, COUNT(*) AS cnt')
+            ->groupByRaw($year.', '.$month)
+            ->orderByDesc('y')
+            ->orderByDesc('m')
+            ->get();
+        $archives = $rows->map(static fn (object $row): array => [
+            'year' => (string) $row->y,
+            'month' => (string) $row->m,
+            'count' => (int) $row->cnt,
+        ])->all();
 
         $pageTitle = __('site.archive_title').' - '.$siteTitle;
 
@@ -79,7 +81,7 @@ class ArchiveController extends Controller
 
         $articles = Article::query()
             ->with(['category', 'author'])
-            ->published()
+            ->centralSitePublic()
             ->where(function ($q) use ($start, $end): void {
                 $q->whereBetween('published_at', [$start, $end])
                     ->orWhere(function ($q2) use ($start, $end): void {

@@ -537,6 +537,7 @@
             let validationItems = @json($validationItems);
             let timer = null;
             let lastSavedContent = textarea.value;
+            let lastSavedHash = @json(hash('sha256', (string) $project->draft_content));
             let editor = null;
 
             const renderValidation = () => {
@@ -723,7 +724,7 @@
                             'Content-Type': 'application/json',
                             'X-CSRF-TOKEN': csrf,
                         },
-                        body: JSON.stringify({ content }),
+                        body: JSON.stringify({ content, base_hash: lastSavedHash }),
                     });
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}`);
@@ -731,6 +732,7 @@
                     const payload = await response.json();
                     validationItems = payload.validation_items || [];
                     lastSavedContent = content;
+                    lastSavedHash = payload.content_hash || lastSavedHash;
                     setStatus(labels.autosaveSaved.replace('__TIME__', payload.saved_at || ''), 'saved');
                     renderValidation();
                     return true;
@@ -750,13 +752,14 @@
                             'Content-Type': 'application/json',
                             'X-CSRF-TOKEN': csrf,
                         },
-                        body: JSON.stringify({ content: textarea.value }),
+                        body: JSON.stringify({ content: textarea.value, base_hash: lastSavedHash }),
                     });
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}`);
                     }
                     const payload = await response.json();
                     validationItems = payload.validation_items || [];
+                    lastSavedHash = payload.content_hash || lastSavedHash;
                     renderValidation();
                 } catch (error) {
                     setStatus(labels.autosaveFailed, 'failed');

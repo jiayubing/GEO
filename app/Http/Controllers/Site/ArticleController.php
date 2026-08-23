@@ -20,7 +20,7 @@ class ArticleController extends Controller
     public function show(string $slug): View
     {
         $article = Article::query()
-            ->published()
+            ->centralSitePublic()
             ->where('slug', $slug)
             ->with(['category', 'author'])
             ->first();
@@ -52,7 +52,7 @@ class ArticleController extends Controller
         $tags = $this->keywordTags((string) $article->keywords);
 
         $related = Article::query()
-            ->published()
+            ->centralSitePublic()
             ->where('category_id', $article->category_id)
             ->whereKeyNot($article->id)
             ->inRandomOrder()

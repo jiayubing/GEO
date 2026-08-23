@@ -153,6 +153,19 @@ final class LegacyProjectBackfillService
         if ($articleTaskMismatch > 0) {
             $anomalies['article_task_project_mismatch'] = $articleTaskMismatch;
         }
+
+        // A single-column FK cannot encode the project owner of the
+        // published knowledge-base relation. Surface this before any legacy
+        // assignment so operators can repair it explicitly.
+        $publishedProjectMismatch = DB::table('enterprise_knowledge_projects as enterprise')
+            ->join('knowledge_bases as knowledge', 'knowledge.id', '=', 'enterprise.published_knowledge_base_id')
+            ->whereNotNull('enterprise.client_project_id')
+            ->whereNotNull('knowledge.client_project_id')
+            ->whereColumn('enterprise.client_project_id', '!=', 'knowledge.client_project_id')
+            ->count();
+        if ($publishedProjectMismatch > 0) {
+            $anomalies['enterprise_published_knowledge_project_mismatch'] = $publishedProjectMismatch;
+        }
     }
 
     /** @return array<string,int> */
@@ -217,6 +230,9 @@ final class LegacyProjectBackfillService
             }
 
             $values = ['client_project_id' => $projectId];
+            if ($tableName === 'articles' && Schema::hasColumn('articles', 'central_site_allowed')) {
+                $values['central_site_allowed'] = true;
+            }
             if (Schema::hasColumn($tableName, 'updated_at')) {
                 $values['updated_at'] = now();
             }

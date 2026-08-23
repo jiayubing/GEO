@@ -274,7 +274,7 @@ final class PublicationBatchService
 
     private function assertArticleGate(ClientProject $project, Article $article, string $target, bool $platformApproved = false): void
     {
-        $gate = PublicationGateContract::evaluate($project, (string) $article->status, (string) $article->review_status, $target, $platformApproved);
+        $gate = PublicationGateContract::evaluate($project, (string) $article->status, (string) $article->review_status, $target, $platformApproved, (bool) $article->central_site_allowed);
         if (! $gate['allowed'] && $gate['code'] !== 'platform_approval_required') {
             throw new DomainException('publication_gate_'.$gate['code']);
         }

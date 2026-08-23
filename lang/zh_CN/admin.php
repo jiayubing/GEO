@@ -4756,6 +4756,7 @@ return [
             'review_status' => '审核状态',
             'is_hot' => '热门文章',
             'is_featured' => '精选文章',
+            'central_site_allowed' => '允许中央站展示',
             'category' => '分类',
             'author' => '作者',
         ],
@@ -4776,6 +4777,7 @@ return [
             'recommendation' => '只有已发布文章会进入前台展示。精选文章首页最多展示 5 篇；热门文章超过 1 篇时首页热点区自动轮播。',
             'is_hot' => '勾选后进入首页热点轮播和侧栏热门列表。',
             'is_featured' => '勾选后进入首页精选文章列表，超过 5 篇时按发布时间自动取最新 5 篇。',
+            'central_site_allowed' => '需已有已确认的本地发布结果，文章才会显示在中央站。',
         ],
         'button' => [
             'show_preview' => '显示预览',
@@ -4811,6 +4813,7 @@ return [
             'review_status' => '审核状态',
             'is_hot' => '热门文章',
             'is_featured' => '精选文章',
+            'central_site_allowed' => '允许中央站展示',
             'category' => '分类',
             'author' => '作者',
         ],
@@ -4827,6 +4830,7 @@ return [
             'recommendation' => '只有已发布文章会进入前台展示。精选文章首页最多展示 5 篇；热门文章超过 1 篇时首页热点区自动轮播。',
             'is_hot' => '勾选后进入首页热点轮播和侧栏热门列表。',
             'is_featured' => '勾选后进入首页精选文章列表，超过 5 篇时按发布时间自动取最新 5 篇。',
+            'central_site_allowed' => '需已有已确认的本地发布结果，文章才会显示在中央站。',
         ],
         'info' => [
             'article_id' => '文章 ID',

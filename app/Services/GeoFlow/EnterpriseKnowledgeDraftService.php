@@ -3,13 +3,17 @@
 namespace App\Services\GeoFlow;
 
 use App\Ai\Agents\MarkdownContentWriterAgent;
+use App\Enums\ClientProjectStatus;
 use App\Models\AiModel;
+use App\Models\ClientProject;
 use App\Models\EnterpriseKnowledgeProject;
+use App\Models\EnterpriseKnowledgeRevision;
 use App\Models\KnowledgeBase;
 use App\Support\GeoFlow\ApiKeyCrypto;
 use App\Support\GeoFlow\OpenAiRuntimeProvider;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
@@ -112,7 +116,7 @@ final class EnterpriseKnowledgeDraftService
                     'error' => null,
                 ];
             } catch (Throwable $exception) {
-                $fallback['error'] = OpenAiRuntimeProvider::normalizeApiException($exception, (string) $model->api_url);
+                $fallback['error'] = $this->safeDraftError($exception);
             }
         }
 
@@ -214,7 +218,7 @@ final class EnterpriseKnowledgeDraftService
     /**
      * @return array{knowledge_base:KnowledgeBase,chunk_count:int,chunk_error:?string}
      */
-    public function publishToKnowledgeBase(EnterpriseKnowledgeProject $project, string $content): array
+    public function publishToKnowledgeBase(EnterpriseKnowledgeProject $project, string $content, ?int $adminId = null): array
     {
         $metadata = [
             'source_name' => (string) $project->name,
@@ -240,22 +244,79 @@ final class EnterpriseKnowledgeDraftService
             'file_path' => '',
             'word_count' => mb_strlen(strip_tags($content), 'UTF-8'),
             'usage_count' => 0,
+            'client_project_id' => $project->client_project_id,
         ] + $metadata;
 
-        $project->loadMissing('publishedKnowledgeBase');
-        $knowledgeBase = $project->publishedKnowledgeBase;
-        if ($knowledgeBase) {
-            $knowledgeBase->forceFill($payload)->save();
-        } else {
-            $knowledgeBase = KnowledgeBase::query()->create($payload);
-        }
+        $knowledgeBase = DB::transaction(function () use ($project, $content, $payload, $adminId): KnowledgeBase {
+            $lockedProject = EnterpriseKnowledgeProject::query()->lockForUpdate()->findOrFail($project->getKey());
+            $this->assertPublishableOwner($lockedProject);
+
+            if (! hash_equals(hash('sha256', trim((string) $lockedProject->draft_content)), hash('sha256', trim($content)))) {
+                throw new \DomainException('enterprise_knowledge_draft_stale');
+            }
+
+            $knowledgeBase = null;
+            if ($lockedProject->published_knowledge_base_id !== null) {
+                $knowledgeBase = KnowledgeBase::query()->lockForUpdate()->find($lockedProject->published_knowledge_base_id);
+                if (! $knowledgeBase
+                    || (int) $knowledgeBase->client_project_id !== (int) $lockedProject->client_project_id) {
+                    throw new \DomainException('enterprise_knowledge_published_owner_mismatch');
+                }
+            }
+
+            $lockedPayload = array_replace($payload, [
+                'name' => (string) $lockedProject->name,
+                'description' => (string) $lockedProject->description,
+                'client_project_id' => $lockedProject->client_project_id,
+            ]);
+            if (array_key_exists('source_name', $lockedPayload)) {
+                $lockedPayload['source_name'] = (string) $lockedProject->name;
+            }
+            if (array_key_exists('business_line', $lockedPayload)) {
+                $lockedPayload['business_line'] = trim((string) $lockedProject->description);
+            }
+            if ($knowledgeBase) {
+                $knowledgeBase->forceFill($lockedPayload)->save();
+            } else {
+                $knowledgeBase = KnowledgeBase::query()->create($lockedPayload);
+            }
+
+            $validationItems = $this->validateDraft($content);
+            $lockedProject->forceFill([
+                'status' => 'published',
+                'published_knowledge_base_id' => (int) $knowledgeBase->getKey(),
+                'validation_json' => json_encode($validationItems, JSON_UNESCAPED_UNICODE),
+                'error_message' => null,
+            ])->save();
+
+            EnterpriseKnowledgeRevision::query()->firstOrCreate([
+                'enterprise_knowledge_project_id' => (int) $lockedProject->getKey(),
+                'source' => 'publish',
+                'content_hash' => hash('sha256', $content),
+            ], [
+                'content' => $content,
+                'summary' => __('admin.enterprise_knowledge.revision_publish'),
+                'created_by_admin_id' => $adminId,
+            ]);
+
+            return $knowledgeBase;
+        });
 
         $chunkError = null;
         try {
             $this->chunkSyncCoordinator->request((int) $knowledgeBase->id, force: true);
         } catch (Throwable $exception) {
-            report($exception);
-            $chunkError = $exception->getMessage();
+            logger()->warning('Enterprise knowledge chunk sync request failed.', [
+                'exception_class' => $exception::class,
+                'enterprise_knowledge_project_id' => $project->getKey(),
+                'knowledge_base_id' => $knowledgeBase->getKey(),
+                'client_project_id' => $project->client_project_id,
+            ]);
+            $chunkError = 'enterprise_knowledge_chunk_sync_failed';
+            EnterpriseKnowledgeProject::query()
+                ->whereKey($project->getKey())
+                ->where('published_knowledge_base_id', $knowledgeBase->getKey())
+                ->update(['error_message' => $chunkError]);
         }
 
         return [
@@ -263,6 +324,44 @@ final class EnterpriseKnowledgeDraftService
             'chunk_count' => 0,
             'chunk_error' => $chunkError,
         ];
+    }
+
+    private function assertPublishableOwner(EnterpriseKnowledgeProject $project): void
+    {
+        if ($project->client_project_id === null) {
+            if (ClientProject::query()->exists()) {
+                throw new \DomainException('enterprise_knowledge_project_owner_missing');
+            }
+
+            return;
+        }
+
+        $active = ClientProject::query()
+            ->whereKey((int) $project->client_project_id)
+            ->where('status', ClientProjectStatus::ACTIVE->value)
+            ->exists();
+        if (! $active) {
+            throw new \DomainException('enterprise_knowledge_project_inactive');
+        }
+    }
+
+    private function safeDraftError(Throwable $exception): string
+    {
+        $message = trim($exception->getMessage());
+        $marker = '__GEOFLOW_SAFE_VALUE__';
+        $safePrefixes = [
+            (string) __('admin.enterprise_knowledge.error.ai_empty'),
+            (string) Str::before((string) __('admin.enterprise_knowledge.error.ai_incomplete', ['sections' => $marker]), $marker),
+            (string) Str::before((string) __('admin.enterprise_knowledge.error.ai_noise', ['items' => $marker]), $marker),
+        ];
+
+        foreach ($safePrefixes as $prefix) {
+            if ($prefix !== '' && str_starts_with($message, $prefix)) {
+                return mb_substr($message, 0, 1000, 'UTF-8');
+            }
+        }
+
+        return 'enterprise_knowledge_ai_generation_failed';
     }
 
     private function buildSystemPrompt(): string

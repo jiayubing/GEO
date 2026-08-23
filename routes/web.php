@@ -347,7 +347,7 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
 
         // 业务页面
         Route::get('materials', [MaterialsController::class, 'index'])->name('materials.index');
-        Route::middleware('admin.super')->group(function () {
+        Route::group([], function () {
             Route::get('url-import', [UrlImportController::class, 'index'])->name('url-import');
             Route::post('url-import', [UrlImportController::class, 'store'])->name('url-import.store');
             Route::get('url-import/history', [UrlImportController::class, 'history'])->name('url-import.history');

@@ -112,6 +112,9 @@ return [
     'outbound_json_max_bytes' => max(1, (int) env('GEOFLOW_OUTBOUND_JSON_MAX_BYTES', 4 * 1024 * 1024)),
     'outbound_ai_max_bytes' => max(1, (int) env('GEOFLOW_OUTBOUND_AI_MAX_BYTES', 8 * 1024 * 1024)),
     'outbound_import_max_bytes' => max(1, (int) env('GEOFLOW_OUTBOUND_IMPORT_MAX_BYTES', 5 * 1024 * 1024)),
+    // 同一项目对同一归一化 URL 的创建去重窗口；窗口内回读同一任务，避免双击或重试生成重复导入。
+    'url_import_idempotency_window_seconds' => max(60, min(86400, (int) env('GEOFLOW_URL_IMPORT_IDEMPOTENCY_WINDOW_SECONDS', 900))),
+    'url_import_processing_stale_seconds' => max(60, min(86400, (int) env('GEOFLOW_URL_IMPORT_PROCESSING_STALE_SECONDS', 900))),
     'outbound_metadata_max_bytes' => max(1, (int) env('GEOFLOW_OUTBOUND_METADATA_MAX_BYTES', 1024 * 1024)),
     // 为 true 时记录知识库「查询向量」是否由默认 embedding 接口生成（便于对照 bak 验证；默认关闭）
     'debug_knowledge_query_embedding' => filter_var(env('GEOFLOW_DEBUG_KNOWLEDGE_QUERY_EMBEDDING', false), FILTER_VALIDATE_BOOLEAN),

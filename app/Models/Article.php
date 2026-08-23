@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Site\CentralSiteArticleQuery;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -34,6 +35,7 @@ class Article extends Model
         'is_hot',
         'is_featured',
         'published_at',
+        'central_site_allowed',
         'client_project_id',
     ];
 
@@ -49,6 +51,7 @@ class Article extends Model
             'is_hot' => 'boolean',
             'is_featured' => 'boolean',
             'published_at' => 'datetime',
+            'central_site_allowed' => 'boolean',
             'client_project_id' => 'integer',
         ];
     }
@@ -134,5 +137,14 @@ class Article extends Model
     public function scopePublished(Builder $query): Builder
     {
         return $query->where('status', 'published')->whereNull('deleted_at');
+    }
+
+    /**
+     * @param  Builder<Article>  $query
+     * @return Builder<Article>
+     */
+    public function scopeCentralSitePublic(Builder $query): Builder
+    {
+        return CentralSiteArticleQuery::apply($query);
     }
 }

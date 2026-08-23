@@ -2,13 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Enums\PublicationGate;
 use App\Models\Admin;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
 use App\Models\Client;
 use App\Models\ClientProject;
-use App\Enums\PublicationGate;
 use App\Models\SensitiveWord;
 use App\Models\Task;
 use App\Services\GeoFlow\ArticleRiskGate;
@@ -117,7 +117,10 @@ class WorkerArticleRiskWorkflowTest extends TestCase
             'slug' => 'approval-project',
             'publication_gate' => PublicationGate::PLATFORM_APPROVAL,
         ]);
-        [$task, $article] = $this->createTaskArticle(['client_project_id' => $project->id]);
+        [$task, $article] = $this->createTaskArticle([
+            'client_project_id' => $project->id,
+            'central_site_allowed' => true,
+        ]);
 
         $result = $this->publishDueDraft($task, $project);
 
@@ -138,7 +141,10 @@ class WorkerArticleRiskWorkflowTest extends TestCase
             'is_legacy' => true,
             'publication_gate' => PublicationGate::LEGACY_AUTO,
         ]);
-        [$task, $article] = $this->createTaskArticle(['client_project_id' => $project->id]);
+        [$task, $article] = $this->createTaskArticle([
+            'client_project_id' => $project->id,
+            'central_site_allowed' => true,
+        ]);
 
         $result = $this->publishDueDraft($task, $project);
 

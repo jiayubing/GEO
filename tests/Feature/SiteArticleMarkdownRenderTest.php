@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\ClientProject;
 use App\Models\SiteSetting;
 use App\Support\Site\ArticleHtmlPresenter;
 use App\Support\Site\SiteSettingsBag;
@@ -59,7 +61,7 @@ MD);
         $author = Author::query()->create([
             'name' => 'GEOFlow',
         ]);
-        $article = Article::query()->create([
+        $article = $this->centralArticle([
             'title' => 'Markdown 渲染测试',
             'slug' => 'markdown-render-test',
             'excerpt' => '',
@@ -102,7 +104,7 @@ MD);
         $author = Author::query()->create([
             'name' => 'GEOFlow',
         ]);
-        $article = Article::query()->create([
+        $article = $this->centralArticle([
             'title' => 'Article SEO Title',
             'slug' => 'article-seo-title',
             'excerpt' => 'Article SEO Description',
@@ -157,7 +159,7 @@ MD);
         $author = Author::query()->create([
             'name' => 'GEOFlow',
         ]);
-        $article = Article::query()->create([
+        $article = $this->centralArticle([
             'title' => 'Sticky Ad 渲染测试',
             'slug' => 'sticky-ad-render-test',
             'excerpt' => '',
@@ -219,7 +221,7 @@ MD);
         $author = Author::query()->create([
             'name' => 'GEOFlow',
         ]);
-        $article = Article::query()->create([
+        $article = $this->centralArticle([
             'title' => '正文广告渲染测试',
             'slug' => 'article-text-ad-render-test',
             'excerpt' => '',
@@ -289,7 +291,7 @@ MD);
         $author = Author::query()->create([
             'name' => 'GEOFlow',
         ]);
-        $article = Article::query()->create([
+        $article = $this->centralArticle([
             'title' => '模块广告渲染测试',
             'slug' => 'article-text-ad-module-render-test',
             'excerpt' => '',
@@ -320,7 +322,7 @@ MD);
         $author = Author::query()->create([
             'name' => 'GEOFlow',
         ]);
-        Article::query()->create([
+        $this->centralArticle([
             'title' => '首页热门文章',
             'slug' => 'homepage-hot-article',
             'excerpt' => '热门摘要',
@@ -332,7 +334,7 @@ MD);
             'is_hot' => true,
             'published_at' => now(),
         ]);
-        Article::query()->create([
+        $this->centralArticle([
             'title' => '首页精选文章',
             'slug' => 'homepage-featured-article',
             'excerpt' => '精选摘要',
@@ -391,7 +393,7 @@ MD);
         $author = Author::query()->create([
             'name' => 'GEOFlow',
         ]);
-        Article::query()->create([
+        $this->centralArticle([
             'title' => '已发布文章',
             'slug' => 'published-category-article',
             'excerpt' => '摘要',
@@ -402,7 +404,7 @@ MD);
             'review_status' => 'approved',
             'published_at' => now(),
         ]);
-        Article::query()->create([
+        $this->centralArticle([
             'title' => '草稿文章',
             'slug' => 'draft-category-article',
             'excerpt' => '摘要',
@@ -466,5 +468,27 @@ MD);
             ->assertSee('GEOFlow Feed')
             ->assertSee('GEOFlow Demo')
             ->assertSee('Demo homepage description');
+    }
+
+    /** @param array<string,mixed> $attributes */
+    private function centralArticle(array $attributes): Article
+    {
+        $client = Client::query()->firstOrCreate(
+            ['slug' => 'site-render-legacy-client'],
+            ['name' => 'Site Render Legacy', 'is_legacy' => true],
+        );
+        $project = ClientProject::query()->firstOrCreate(
+            ['client_id' => $client->id, 'slug' => 'site-render-legacy-project'],
+            [
+                'name' => 'Site Render Legacy',
+                'is_legacy' => true,
+                'publication_gate' => 'legacy_auto',
+            ],
+        );
+
+        return Article::query()->create(array_merge($attributes, [
+            'client_project_id' => $project->id,
+            'central_site_allowed' => true,
+        ]));
     }
 }

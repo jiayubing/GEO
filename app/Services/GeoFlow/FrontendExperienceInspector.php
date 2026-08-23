@@ -231,6 +231,7 @@ class FrontendExperienceInspector
             'supports_home_carousel_slides' => true,
             'supports_article_text_ads' => true,
             'supports_static_generation' => true,
+            'supports_project_site_identity' => true,
         ];
     }
 
@@ -333,6 +334,7 @@ class FrontendExperienceInspector
             'supports_home_carousel_slides' => (bool) ($capabilities['supports_home_carousel_slides'] ?? false),
             'supports_article_text_ads' => (bool) ($capabilities['supports_article_text_ads'] ?? false),
             'supports_static_generation' => (bool) ($capabilities['supports_static_generation'] ?? false),
+            'supports_project_site_identity' => (bool) ($capabilities['supports_project_site_identity'] ?? false),
             'agent_base_url' => (string) ($capabilities['agent_base_url'] ?? ''),
         ]);
         $cache['source'] = 'live';
@@ -433,6 +435,17 @@ class FrontendExperienceInspector
                     'requires_confirmation' => true,
                 ];
             }
+        }
+
+        if (is_array($payload['project_site_identity'] ?? null)
+            && ! (bool) ($remoteTarget['supports_project_site_identity'] ?? false)) {
+            $warnings[] = [
+                'code' => 'supports_project_site_identity',
+                'area' => 'project_site_identity',
+                'severity' => 'warning',
+                'message' => '远端目标包未声明项目站点 identity 能力；已绑定项目站点不能同步或发布，请先升级目标站点包并刷新能力。',
+                'requires_confirmation' => true,
+            ];
         }
 
         $remoteFrontMode = (string) ($remoteTarget['front_mode'] ?? '');

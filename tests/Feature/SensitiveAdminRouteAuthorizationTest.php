@@ -20,7 +20,6 @@ class SensitiveAdminRouteAuthorizationTest extends TestCase
             ->filter(static fn (?string $name): bool => is_string($name) && (
                 str_starts_with($name, 'admin.distribution.')
                 || $name === 'admin.analytics.distribution'
-                || str_starts_with($name, 'admin.url-import')
                 || str_starts_with($name, 'admin.site-settings.theme-replications.')
             ))
             ->values();
@@ -70,19 +69,17 @@ class SensitiveAdminRouteAuthorizationTest extends TestCase
     }
 
     #[Test]
-    public function standard_admin_pages_do_not_render_super_admin_only_links(): void
+    public function standard_admin_without_a_project_context_is_blocked_from_unprojectized_admin_pages(): void
     {
         $admin = $this->admin('admin');
 
         $this->actingAs($admin, 'admin')
             ->get(route('admin.dashboard'))
-            ->assertOk()
-            ->assertDontSee(route('admin.admin-users.index'), false);
+            ->assertForbidden();
 
         $this->actingAs($admin, 'admin')
             ->get(route('admin.tasks.create'))
-            ->assertOk()
-            ->assertDontSee(route('admin.distribution.create'), false);
+            ->assertForbidden();
     }
 
     private function admin(string $role): Admin

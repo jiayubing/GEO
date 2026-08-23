@@ -2,10 +2,10 @@
 
 namespace Tests\Unit;
 
+use App\Enums\ClientProjectStatus;
 use App\Enums\PublicationGate;
 use App\Models\Client;
 use App\Models\ClientProject;
-use App\Enums\ClientProjectStatus;
 use App\Support\GeoFlow\PublicationGateContract;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use InvalidArgumentException;
@@ -34,17 +34,23 @@ class PublicationGateContractTest extends TestCase
     public function test_review_approval_does_not_grant_platform_publication(): void
     {
         $project = $this->project(PublicationGate::PLATFORM_APPROVAL);
-        $result = PublicationGateContract::evaluate($project, 'draft', 'approved', PublicationGateContract::TARGET_LOCAL);
+        $result = PublicationGateContract::evaluate($project, 'draft', 'approved', PublicationGateContract::TARGET_LOCAL, false, true);
 
         $this->assertFalse($result['allowed']);
         $this->assertSame('platform_approval_required', $result['code']);
     }
 
-    public function test_legacy_auto_allows_approved_articles_for_each_target(): void
+    public function test_local_publication_requires_an_explicit_central_site_permission(): void
     {
         $project = $this->project(PublicationGate::LEGACY_AUTO);
+
+        $denied = PublicationGateContract::evaluate($project, 'draft', 'approved', PublicationGateContract::TARGET_LOCAL);
+        $this->assertFalse($denied['allowed']);
+        $this->assertSame('central_site_not_allowed', $denied['code']);
+
         foreach (PublicationGateContract::targets() as $target) {
-            $this->assertTrue(PublicationGateContract::allowsPublicTransition($project, 'draft', 'approved', $target), $target);
+            $centralSiteAllowed = $target === PublicationGateContract::TARGET_LOCAL;
+            $this->assertTrue(PublicationGateContract::allowsPublicTransition($project, 'draft', 'approved', $target, false, $centralSiteAllowed), $target);
         }
     }
 

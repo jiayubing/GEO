@@ -3,7 +3,9 @@
 namespace App\Services\GeoFlow;
 
 use App\Ai\Agents\MarkdownContentWriterAgent;
+use App\Enums\ClientProjectStatus;
 use App\Models\AiModel;
+use App\Models\ClientProject;
 use App\Models\Keyword;
 use App\Models\KeywordLibrary;
 use App\Models\KnowledgeBase;
@@ -33,6 +35,7 @@ final class UrlImportProcessingService
         private readonly SafeOutboundHttpClient $safeHttp,
         private readonly Factory $http,
         private readonly AiUsageQuotaService $usageQuota,
+        private readonly ProjectResourceResolver $projectResources,
     ) {}
 
     /**
@@ -124,19 +127,31 @@ final class UrlImportProcessingService
 
     public function process(UrlImportJob $job): UrlImportJob
     {
-        $this->updateStep($job, 'fetch', 10, [
-            'status' => 'running',
-            'started_at' => now(),
-            'error_message' => '',
-        ]);
-        $this->log($job, 'info', __('admin.url_import.log.fetch_start', ['url' => $job->normalized_url]));
+        return $this->processById((int) $job->getKey());
+    }
+
+    public function processById(int $jobId): UrlImportJob
+    {
+        $job = $this->claimProcessingJob($jobId);
+        if (in_array((string) $job->status, ['completed', 'imported'], true)) {
+            return $job;
+        }
 
         try {
+            $this->updateStep($job, 'fetch', 10, [
+                'status' => 'running',
+                'started_at' => now(),
+                'error_message' => '',
+            ]);
+            $this->log($job, 'info', __('admin.url_import.log.fetch_start', ['url' => $job->normalized_url]));
+
+            $job = $this->refreshRunningJob((int) $job->getKey());
             $fetched = $this->fetchPage((string) $job->normalized_url);
             $this->log($job, 'info', __('admin.url_import.log.fetch_done', ['length' => strlen($fetched['html'])]));
 
             $this->updateStep($job, 'page_json', 25);
             $this->log($job, 'info', __('admin.url_import.log.page_json_start'));
+            $job = $this->refreshRunningJob((int) $job->getKey());
             $parsed = $this->parseHtml($fetched['html'], (string) $job->normalized_url);
             $this->log($job, 'info', __('admin.url_import.log.extract_done', [
                 'chars' => mb_strlen($parsed['text'], 'UTF-8'),
@@ -145,7 +160,7 @@ final class UrlImportProcessingService
                 'chars' => mb_strlen((string) data_get($parsed, 'raw_json.text', ''), 'UTF-8'),
             ]));
 
-            $analysis = $this->buildAnalysis($parsed, $job);
+            $analysis = $this->buildAnalysis($parsed, $this->refreshRunningJob((int) $job->getKey()));
 
             $result = [
                 'source' => [
@@ -176,16 +191,47 @@ final class UrlImportProcessingService
 
             return $job->refresh();
         } catch (Throwable $exception) {
-            $job->update([
-                'status' => 'failed',
-                'progress_percent' => 100,
-                'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
-            ]);
-            $this->log($job, 'error', __('admin.url_import.log.failed', ['message' => $exception->getMessage()]));
+            $code = $this->safeErrorCode($exception, 'url_import_processing_failed');
+            $failedJob = $this->markProcessingFailed((int) $job->getKey(), $code);
+            if ($failedJob === null) {
+                throw new \DomainException('url_import_job_not_found', 0, $exception);
+            }
+            $this->log($failedJob, 'error', __('admin.url_import.log.failed', ['message' => $code]));
 
-            return $job->refresh();
+            return $failedJob;
         }
+    }
+
+    public function recoverStaleProcessingById(int $jobId): UrlImportJob
+    {
+        $job = DB::transaction(function () use ($jobId): UrlImportJob {
+            $locked = UrlImportJob::query()->lockForUpdate()->find($jobId);
+            if ($locked === null) {
+                throw new \DomainException('url_import_job_not_found');
+            }
+
+            $this->assertActiveOwner($locked);
+            $staleAt = now()->subSeconds((int) config('geoflow.url_import_processing_stale_seconds', 900));
+            if ((string) $locked->status !== 'running'
+                || $locked->started_at === null
+                || $locked->started_at->greaterThan($staleAt)) {
+                throw new \DomainException('url_import_job_not_recoverable');
+            }
+
+            $locked->forceFill([
+                'status' => 'queued',
+                'current_step' => 'queued',
+                'progress_percent' => 0,
+                'error_message' => 'url_import_processing_interrupted',
+                'started_at' => null,
+                'finished_at' => null,
+            ])->save();
+
+            return $locked->refresh();
+        }, 3);
+        $this->log($job, 'warning', 'url_import_processing_recovered', 'queued');
+
+        return $job;
     }
 
     /**
@@ -193,102 +239,30 @@ final class UrlImportProcessingService
      */
     public function commit(UrlImportJob $job): array
     {
-        $result = $this->decodeResult($job);
-        if ($result === []) {
-            throw new \RuntimeException(__('admin.url_import.error.commit_before_parse'));
-        }
-        if (($result['import']['status'] ?? '') === 'imported' && is_array($result['import']['summary'] ?? null)) {
-            /** @var array{knowledge_base:int,keyword_library:int,title_library:int,keywords:int,titles:int} $summary */
-            $summary = $result['import']['summary'];
+        return $this->commitById((int) $job->getKey());
+    }
 
-            return $summary;
-        }
-
-        /** @var array<string, mixed> $page */
-        $page = is_array($result['page'] ?? null) ? $result['page'] : [];
-        /** @var array<string, mixed> $analysis */
-        $analysis = is_array($result['analysis'] ?? null) ? $result['analysis'] : [];
-        $baseName = $this->safeName((string) ($analysis['library_name'] ?? $page['title'] ?? $job->source_domain ?: 'URL素材'));
-        $knowledgeContent = trim((string) ($analysis['knowledge_markdown'] ?? $page['text'] ?? ''));
-        if ($knowledgeContent === '') {
-            throw new \RuntimeException(__('admin.url_import.error.commit_before_parse'));
-        }
-        $keywords = $this->stringList($analysis['keywords'] ?? []);
-        $titles = $this->stringList($analysis['titles'] ?? []);
-        if ($keywords === []) {
-            throw new \RuntimeException(__('admin.url_import.error.ai_keywords_missing'));
-        }
-        if ($titles === []) {
-            throw new \RuntimeException(__('admin.url_import.error.ai_titles_missing'));
-        }
-
-        $summary = DB::transaction(function () use ($baseName, $knowledgeContent, $analysis, $keywords, $titles): array {
-            $knowledgeBase = KnowledgeBase::query()->create([
-                'name' => $baseName.' 知识库',
-                'description' => (string) ($analysis['summary'] ?? ''),
-                'content' => $knowledgeContent,
-                'character_count' => mb_strlen($knowledgeContent, 'UTF-8'),
-                'used_task_count' => 0,
-                'file_type' => 'markdown',
-                'file_path' => '',
-                'word_count' => mb_strlen($knowledgeContent, 'UTF-8'),
-                'usage_count' => 0,
-            ]);
-
-            $keywordLibrary = KeywordLibrary::query()->create([
-                'name' => $baseName.' 关键词库',
-                'description' => 'URL智能采集自动生成',
-                'keyword_count' => 0,
-            ]);
-            foreach ($keywords as $keyword) {
-                Keyword::query()->firstOrCreate(
-                    ['library_id' => (int) $keywordLibrary->id, 'keyword' => $keyword],
-                    ['used_count' => 0, 'usage_count' => 0]
-                );
+    /**
+     * @return array{knowledge_base:int,keyword_library:int,title_library:int,keywords:int,titles:int}
+     */
+    public function commitById(int $jobId): array
+    {
+        try {
+            $summary = DB::transaction(fn (): ?array => $this->commitLockedJob($jobId), 3);
+            if ($summary === null) {
+                throw new \DomainException('url_import_commit_uncertain');
             }
-            $keywordLibrary->update(['keyword_count' => Keyword::query()->where('library_id', (int) $keywordLibrary->id)->count()]);
+        } catch (Throwable $exception) {
+            $code = $this->safeErrorCode($exception, 'url_import_commit_failed');
+            $this->markCommitFailed($jobId, $code);
 
-            $titleLibrary = TitleLibrary::query()->create([
-                'name' => $baseName.' 标题库',
-                'description' => 'URL智能采集自动生成',
-                'title_count' => 0,
-                'generation_type' => 'url_import',
-                'generation_rounds' => 1,
-                'is_ai_generated' => 1,
-            ]);
-            foreach ($titles as $index => $title) {
-                Title::query()->firstOrCreate(
-                    ['library_id' => (int) $titleLibrary->id, 'title' => $title],
-                    [
-                        'keyword' => $keywords[$index % max(1, count($keywords))] ?? '',
-                        'is_ai_generated' => true,
-                        'used_count' => 0,
-                        'usage_count' => 0,
-                    ]
-                );
-            }
-            $titleLibrary->update(['title_count' => Title::query()->where('library_id', (int) $titleLibrary->id)->count()]);
+            throw new \DomainException($code, 0, $exception);
+        }
 
-            return [
-                'knowledge_base' => (int) $knowledgeBase->id,
-                'keyword_library' => (int) $keywordLibrary->id,
-                'title_library' => (int) $titleLibrary->id,
-                'keywords' => (int) Keyword::query()->where('library_id', (int) $keywordLibrary->id)->count(),
-                'titles' => (int) Title::query()->where('library_id', (int) $titleLibrary->id)->count(),
-            ];
-        });
-
-        $result['import'] = [
-            'status' => 'imported',
-            'imported_at' => now()->toIso8601String(),
-            'summary' => $summary,
-        ];
-        $job->update([
-            'result_json' => json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
-            'current_step' => 'imported',
-            'progress_percent' => 100,
-        ]);
-        $this->log($job, 'info', __('admin.url_import.log.import_done'));
+        $committedJob = UrlImportJob::query()->find($jobId);
+        if ($committedJob !== null) {
+            $this->log($committedJob, 'info', __('admin.url_import.log.import_done'));
+        }
 
         return $summary;
     }
@@ -479,7 +453,7 @@ final class UrlImportProcessingService
                         'cleaned' => $cleaned,
                     ];
                 } catch (Throwable $exception) {
-                    $message = $this->normalizeAiErrorMessage($exception, $model);
+                    $message = 'url_import_ai_model_failed';
                     if ($attempt < self::AI_ANALYSIS_MAX_ATTEMPTS) {
                         $this->log($job, 'warning', __('admin.url_import.log.ai_model_retry', [
                             'model' => $this->modelDisplayName($model),
@@ -657,7 +631,7 @@ final class UrlImportProcessingService
 
     private function formatModelFailure(AiModel $model, Throwable $exception): string
     {
-        return $this->modelDisplayName($model).'：'.$this->normalizeAiErrorMessage($exception, $model);
+        return $this->modelDisplayName($model).'：url_import_ai_model_failed';
     }
 
     private function normalizeAiErrorMessage(Throwable $exception, ?AiModel $model = null): string
@@ -1234,9 +1208,322 @@ PROMPT;
      */
     private function updateStep(UrlImportJob $job, string $step, int $progress, array $extra = []): void
     {
+        $fresh = $this->refreshRunningJob((int) $job->getKey());
+        $job->setRawAttributes($fresh->getAttributes(), true);
+        $job->syncOriginal();
         $job->update(array_merge([
             'current_step' => $step,
             'progress_percent' => max(0, min(100, $progress)),
         ], $extra));
+    }
+
+    private function claimProcessingJob(int $jobId): UrlImportJob
+    {
+        return DB::transaction(function () use ($jobId): UrlImportJob {
+            $job = UrlImportJob::query()->lockForUpdate()->find($jobId);
+            if ($job === null) {
+                throw new \DomainException('url_import_job_not_found');
+            }
+
+            $this->assertActiveOwner($job);
+            if (in_array((string) $job->status, ['completed', 'imported'], true)) {
+                return $job;
+            }
+            if (! in_array((string) $job->status, ['queued', 'failed'], true)) {
+                throw new \DomainException('url_import_job_state_not_processable');
+            }
+
+            $job->forceFill([
+                'status' => 'running',
+                'current_step' => 'queued',
+                'progress_percent' => 0,
+                'error_message' => '',
+                'started_at' => now(),
+                'finished_at' => null,
+            ])->save();
+
+            return $job->refresh();
+        }, 3);
+    }
+
+    private function refreshRunningJob(int $jobId): UrlImportJob
+    {
+        $job = UrlImportJob::query()->find($jobId);
+        if ($job === null) {
+            throw new \DomainException('url_import_job_not_found');
+        }
+
+        $this->assertActiveOwner($job);
+        if ((string) $job->status !== 'running') {
+            throw new \DomainException('url_import_job_state_not_processable');
+        }
+
+        return $job;
+    }
+
+    private function markProcessingFailed(int $jobId, string $errorCode): ?UrlImportJob
+    {
+        return DB::transaction(function () use ($jobId, $errorCode): ?UrlImportJob {
+            $job = UrlImportJob::query()->lockForUpdate()->find($jobId);
+            if ($job === null || (string) $job->status !== 'running') {
+                return $job;
+            }
+
+            $job->forceFill([
+                'status' => 'failed',
+                'progress_percent' => 100,
+                'error_message' => $errorCode,
+                'finished_at' => now(),
+            ])->save();
+
+            return $job->refresh();
+        }, 3);
+    }
+
+    /**
+     * @return array{knowledge_base:int,keyword_library:int,title_library:int,keywords:int,titles:int}|null
+     */
+    private function commitLockedJob(int $jobId): ?array
+    {
+        $job = UrlImportJob::query()->lockForUpdate()->find($jobId);
+        if ($job === null) {
+            throw new \DomainException('url_import_job_not_found');
+        }
+
+        $project = $this->assertActiveOwner($job);
+        $commitStatus = (string) ($job->commit_status ?: 'not_started');
+        if ($commitStatus === 'imported') {
+            return $this->summaryForCommittedJob($job, $project);
+        }
+        if ($commitStatus === 'uncertain') {
+            throw new \DomainException('url_import_commit_uncertain');
+        }
+        if ((string) $job->status !== 'completed') {
+            throw new \DomainException('url_import_commit_before_preview');
+        }
+
+        $payload = $this->commitPayload($job);
+        $job->forceFill([
+            'commit_status' => 'committing',
+            'commit_started_at' => now(),
+            'commit_finished_at' => null,
+            'commit_error_code' => null,
+        ])->save();
+
+        $ownerId = $job->client_project_id === null ? null : (int) $job->client_project_id;
+        $knowledgeBase = KnowledgeBase::query()->create([
+            'name' => $payload['base_name'].' 知识库',
+            'description' => $payload['summary'],
+            'content' => $payload['knowledge_content'],
+            'character_count' => mb_strlen($payload['knowledge_content'], 'UTF-8'),
+            'used_task_count' => 0,
+            'file_type' => 'markdown',
+            'file_path' => '',
+            'word_count' => mb_strlen($payload['knowledge_content'], 'UTF-8'),
+            'usage_count' => 0,
+            'client_project_id' => $ownerId,
+        ]);
+
+        $keywordLibrary = KeywordLibrary::query()->create([
+            'name' => $payload['base_name'].' 关键词库',
+            'description' => 'URL智能采集自动生成',
+            'keyword_count' => 0,
+            'client_project_id' => $ownerId,
+        ]);
+        foreach ($payload['keywords'] as $keyword) {
+            Keyword::query()->firstOrCreate(
+                ['library_id' => (int) $keywordLibrary->id, 'keyword' => $keyword],
+                ['used_count' => 0, 'usage_count' => 0]
+            );
+        }
+        $keywordCount = Keyword::query()->where('library_id', (int) $keywordLibrary->id)->count();
+        $keywordLibrary->update(['keyword_count' => $keywordCount]);
+
+        $titleLibrary = TitleLibrary::query()->create([
+            'name' => $payload['base_name'].' 标题库',
+            'description' => 'URL智能采集自动生成',
+            'title_count' => 0,
+            'generation_type' => 'url_import',
+            'keyword_library_id' => (int) $keywordLibrary->id,
+            'generation_rounds' => 1,
+            'is_ai_generated' => 1,
+            'client_project_id' => $ownerId,
+        ]);
+        foreach ($payload['titles'] as $index => $title) {
+            Title::query()->firstOrCreate(
+                ['library_id' => (int) $titleLibrary->id, 'title' => $title],
+                [
+                    'keyword' => $payload['keywords'][$index % count($payload['keywords'])],
+                    'is_ai_generated' => true,
+                    'used_count' => 0,
+                    'usage_count' => 0,
+                ]
+            );
+        }
+        $titleCount = Title::query()->where('library_id', (int) $titleLibrary->id)->count();
+        $titleLibrary->update(['title_count' => $titleCount]);
+
+        if ($project instanceof ClientProject) {
+            $this->projectResources->requireSameProject($project, $job, $knowledgeBase, $keywordLibrary, $titleLibrary);
+            $this->projectResources->requireOwned(KeywordLibrary::class, (int) $titleLibrary->keyword_library_id, $project);
+        } elseif ($knowledgeBase->client_project_id !== null
+            || $keywordLibrary->client_project_id !== null
+            || $titleLibrary->client_project_id !== null) {
+            throw new \DomainException('url_import_commit_owner_mismatch');
+        }
+
+        $summary = [
+            'knowledge_base' => (int) $knowledgeBase->id,
+            'keyword_library' => (int) $keywordLibrary->id,
+            'title_library' => (int) $titleLibrary->id,
+            'keywords' => (int) $keywordCount,
+            'titles' => (int) $titleCount,
+        ];
+        $result = $payload['result'];
+        $result['import'] = [
+            'status' => 'imported',
+            'imported_at' => now()->toIso8601String(),
+            'summary' => $summary,
+        ];
+        $job->forceFill([
+            'result_json' => json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'current_step' => 'imported',
+            'progress_percent' => 100,
+            'commit_status' => 'imported',
+            'committed_knowledge_base_id' => (int) $knowledgeBase->id,
+            'committed_keyword_library_id' => (int) $keywordLibrary->id,
+            'committed_title_library_id' => (int) $titleLibrary->id,
+            'commit_finished_at' => now(),
+            'commit_error_code' => null,
+            'error_message' => '',
+        ])->save();
+
+        return $summary;
+    }
+
+    /**
+     * @return array{base_name:string,knowledge_content:string,summary:string,keywords:list<string>,titles:list<string>,result:array<string,mixed>}
+     */
+    private function commitPayload(UrlImportJob $job): array
+    {
+        $result = $this->decodeResult($job);
+        $source = is_array($result['source'] ?? null) ? $result['source'] : [];
+        if ($result === []
+            || (string) ($source['normalized_url'] ?? '') !== (string) $job->normalized_url
+            || (string) ($source['domain'] ?? '') !== (string) $job->source_domain) {
+            throw new \DomainException('url_import_preview_source_mismatch');
+        }
+
+        $page = is_array($result['page'] ?? null) ? $result['page'] : [];
+        $analysis = is_array($result['analysis'] ?? null) ? $result['analysis'] : [];
+        $knowledgeContent = trim($this->aiResponseTextToString($analysis['knowledge_markdown'] ?? $page['text'] ?? ''));
+        $keywords = $this->stringList($analysis['keywords'] ?? []);
+        $titles = $this->stringList($analysis['titles'] ?? []);
+        if ($knowledgeContent === '') {
+            throw new \DomainException('url_import_commit_before_preview');
+        }
+        if ($keywords === []) {
+            throw new \DomainException('url_import_keywords_missing');
+        }
+        if ($titles === []) {
+            throw new \DomainException('url_import_titles_missing');
+        }
+
+        return [
+            'base_name' => $this->safeName($this->aiResponseTextToString(
+                $analysis['library_name'] ?? $page['title'] ?? $job->source_domain ?? 'URL素材',
+            )),
+            'knowledge_content' => $knowledgeContent,
+            'summary' => Str::limit($this->aiResponseTextToString($analysis['summary'] ?? ''), 1000, ''),
+            'keywords' => $keywords,
+            'titles' => $titles,
+            'result' => $result,
+        ];
+    }
+
+    /**
+     * @return array{knowledge_base:int,keyword_library:int,title_library:int,keywords:int,titles:int}|null
+     */
+    private function summaryForCommittedJob(UrlImportJob $job, ?ClientProject $project): ?array
+    {
+        $knowledgeBase = KnowledgeBase::query()->lockForUpdate()->find($job->committed_knowledge_base_id);
+        $keywordLibrary = KeywordLibrary::query()->lockForUpdate()->find($job->committed_keyword_library_id);
+        $titleLibrary = TitleLibrary::query()->lockForUpdate()->find($job->committed_title_library_id);
+        if ($knowledgeBase === null || $keywordLibrary === null || $titleLibrary === null
+            || (int) $titleLibrary->keyword_library_id !== (int) $keywordLibrary->getKey()) {
+            $job->forceFill(['commit_status' => 'uncertain', 'commit_error_code' => 'url_import_commit_artifact_missing'])->save();
+
+            return null;
+        }
+
+        if ($project instanceof ClientProject) {
+            try {
+                $this->projectResources->requireSameProject($project, $job, $knowledgeBase, $keywordLibrary, $titleLibrary);
+            } catch (Throwable) {
+                $job->forceFill(['commit_status' => 'uncertain', 'commit_error_code' => 'url_import_commit_owner_mismatch'])->save();
+
+                return null;
+            }
+        } elseif ($knowledgeBase->client_project_id !== null
+            || $keywordLibrary->client_project_id !== null
+            || $titleLibrary->client_project_id !== null) {
+            $job->forceFill(['commit_status' => 'uncertain', 'commit_error_code' => 'url_import_commit_owner_mismatch'])->save();
+
+            return null;
+        }
+
+        return [
+            'knowledge_base' => (int) $knowledgeBase->getKey(),
+            'keyword_library' => (int) $keywordLibrary->getKey(),
+            'title_library' => (int) $titleLibrary->getKey(),
+            'keywords' => (int) Keyword::query()->where('library_id', (int) $keywordLibrary->getKey())->count(),
+            'titles' => (int) Title::query()->where('library_id', (int) $titleLibrary->getKey())->count(),
+        ];
+    }
+
+    private function markCommitFailed(int $jobId, string $errorCode): void
+    {
+        DB::transaction(function () use ($jobId, $errorCode): void {
+            $job = UrlImportJob::query()->lockForUpdate()->find($jobId);
+            if ($job === null || in_array((string) $job->commit_status, ['imported', 'uncertain'], true)) {
+                return;
+            }
+
+            $job->forceFill([
+                'commit_status' => 'failed',
+                'commit_finished_at' => now(),
+                'commit_error_code' => $errorCode,
+            ])->save();
+        }, 3);
+    }
+
+    private function assertActiveOwner(UrlImportJob $job): ?ClientProject
+    {
+        if ($job->client_project_id === null) {
+            if (ClientProject::query()->exists()) {
+                throw new \DomainException('url_import_job_owner_missing');
+            }
+
+            return null;
+        }
+
+        $project = ClientProject::query()->find((int) $job->client_project_id);
+        if ($project === null || $project->status !== ClientProjectStatus::ACTIVE) {
+            throw new \DomainException('url_import_project_inactive');
+        }
+
+        $this->projectResources->requireSameProject($project, $job);
+
+        return $project;
+    }
+
+    private function safeErrorCode(Throwable $exception, string $fallback): string
+    {
+        $message = trim($exception->getMessage());
+        if (preg_match('/^url_import_[a-z0-9_]+$/', $message) === 1) {
+            return $message;
+        }
+
+        return $fallback;
     }
 }

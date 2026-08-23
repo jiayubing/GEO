@@ -9,7 +9,9 @@ use InvalidArgumentException;
 final class PublicationGateContract
 {
     public const TARGET_LOCAL = 'local';
+
     public const TARGET_CHANNEL = 'channel';
+
     public const TARGET_MANUAL = 'manual';
 
     /** @return list<string> */
@@ -30,7 +32,7 @@ final class PublicationGateContract
         string $reviewStatus,
         string $target,
         bool $platformApproved = false,
-        bool $centralSiteAllowed = true,
+        bool $centralSiteAllowed = false,
         bool $channelMembershipActive = true,
     ): array {
         if (! $project instanceof ClientProject) {
@@ -74,12 +76,12 @@ final class PublicationGateContract
         string $reviewStatus,
         string $target,
         bool $platformApproved = false,
-        bool $centralSiteAllowed = true,
+        bool $centralSiteAllowed = false,
         bool $channelMembershipActive = true,
     ): bool {
         return self::evaluate($project, $articleStatus, $reviewStatus, $target, $platformApproved, $centralSiteAllowed, $channelMembershipActive)['allowed'];
     }
-    
+
     /** @return list<array<string, mixed>> */
     public static function stateMatrix(): array
     {
@@ -93,6 +95,7 @@ final class PublicationGateContract
                 }
             }
         }
+
         return $rows;
     }
 }

@@ -15,7 +15,10 @@ class DistributionPayloadBuilder
      *
      * @return array<string,mixed>
      */
-    public function build(Article $article): array
+    /**
+     * @param  array{version:string,status:string,canonical_url:string,canonical_identity:string,project_id:int,project_slug:string}|null  $projectSiteIdentity
+     */
+    public function build(Article $article, ?array $projectSiteIdentity = null): array
     {
         $article->loadMissing([
             'category:id,name,slug',
@@ -29,7 +32,7 @@ class DistributionPayloadBuilder
         $contentHtml = ArticleHtmlPresenter::markdownToHtml($body);
         $heroImageUrl = $this->heroImageUrl($article);
 
-        return [
+        $payload = [
             'version' => '1.0',
             'source' => 'geoflow',
             'event' => 'article.publish',
@@ -67,6 +70,13 @@ class DistributionPayloadBuilder
                 'images' => $this->extractImageAssets($content, $contentHtml, $heroImageUrl !== '' ? [$heroImageUrl] : []),
             ],
         ];
+        if ($projectSiteIdentity !== null) {
+            $payload['project_site_identity'] = $projectSiteIdentity;
+            $payload['article']['project_id'] = (int) $projectSiteIdentity['project_id'];
+            $payload['article']['project_slug'] = (string) $projectSiteIdentity['project_slug'];
+        }
+
+        return $payload;
     }
 
     /**

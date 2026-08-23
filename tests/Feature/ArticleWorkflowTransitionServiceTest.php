@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\PublicationGate;
 use App\Exceptions\ArticleRiskGateException;
 use App\Exceptions\PublicationGateException;
 use App\Models\Article;
@@ -9,7 +10,6 @@ use App\Models\Author;
 use App\Models\Category;
 use App\Models\Client;
 use App\Models\ClientProject;
-use App\Enums\PublicationGate;
 use App\Models\SensitiveWord;
 use App\Services\GeoFlow\ArticleWorkflowTransitionService;
 use App\Support\GeoFlow\ArticleWorkflow;
@@ -89,6 +89,7 @@ class ArticleWorkflowTransitionServiceTest extends TestCase
             'client_project_id' => $project->id,
             'content' => 'Clean content.',
             'review_status' => 'approved',
+            'central_site_allowed' => true,
         ]);
 
         try {
@@ -115,6 +116,7 @@ class ArticleWorkflowTransitionServiceTest extends TestCase
         $article = $this->createArticle([
             'client_project_id' => $project->id,
             'review_status' => 'approved',
+            'central_site_allowed' => true,
         ]);
 
         $transitioned = app(ArticleWorkflowTransitionService::class)->transition(

@@ -228,6 +228,7 @@ class ArticleController extends Controller
     public function create(Request $request): View
     {
         $this->projectContext($request, true);
+
         return view('admin.articles.form', [
             'pageTitle' => __('admin.article_create.page_title'),
             'activeMenu' => 'articles',
@@ -284,6 +285,7 @@ class ArticleController extends Controller
                     'is_ai_generated' => (bool) ($payload['is_ai_generated'] ?? false),
                     'is_hot' => (bool) ($payload['is_hot'] ?? false),
                     'is_featured' => (bool) ($payload['is_featured'] ?? false),
+                    'central_site_allowed' => (bool) ($payload['central_site_allowed'] ?? false),
                     'client_project_id' => $project?->getKey(),
                 ]);
 
@@ -369,6 +371,7 @@ class ArticleController extends Controller
                 'task_name' => (string) ($article->task->name ?? ''),
                 'is_hot' => (bool) ($article->is_hot ?? false),
                 'is_featured' => (bool) ($article->is_featured ?? false),
+                'central_site_allowed' => (bool) $article->central_site_allowed,
             ],
             'riskScan' => $this->riskScanViewData($article),
             'formOptions' => $this->loadFormOptions(false, $project),
@@ -475,6 +478,7 @@ class ArticleController extends Controller
                     'published_at' => null,
                     'is_hot' => (bool) ($payload['is_hot'] ?? false),
                     'is_featured' => (bool) ($payload['is_featured'] ?? false),
+                    'central_site_allowed' => (bool) ($payload['central_site_allowed'] ?? false),
                 ])->save();
 
                 $latestScan = $lockedArticle->latestRiskScan()->first();
@@ -919,6 +923,7 @@ class ArticleController extends Controller
      *     risk_override_reason: ?string,
      *     is_hot: bool,
      *     is_featured: bool,
+     *     central_site_allowed: bool,
      *     source_title_id: ?int,
      *     is_ai_generated: bool
      * }
@@ -940,6 +945,7 @@ class ArticleController extends Controller
             'risk_override_reason' => ['nullable', 'string', 'max:1000'],
             'is_hot' => ['nullable', 'boolean'],
             'is_featured' => ['nullable', 'boolean'],
+            'central_site_allowed' => ['nullable', 'boolean'],
             'source_title_id' => ['nullable', 'integer', 'min:1', 'exists:titles,id'],
             'is_ai_generated' => ['nullable', 'boolean'],
         ], [

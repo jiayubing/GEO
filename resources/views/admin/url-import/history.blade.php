@@ -45,7 +45,7 @@
                         @forelse ($jobs as $job)
                             <tr>
                                 <td class="px-6 py-4 text-sm text-gray-900">
-                                    <a href="{{ route('admin.url-import.show', ['jobId' => $job->id]) }}" class="font-medium text-blue-600 hover:text-blue-800 break-all">{{ $job->url }}</a>
+                                    <a href="{{ route('admin.url-import.show', ['jobId' => $job->id, 'legacy' => $legacyContext ? 1 : null]) }}" class="font-medium text-blue-600 hover:text-blue-800 break-all">{{ $job->url }}</a>
                                     @if ($job->source_domain)
                                         <div class="mt-1 text-xs text-gray-500">{{ $job->source_domain }}</div>
                                     @endif

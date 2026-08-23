@@ -4,12 +4,17 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Jobs\GenerateEnterpriseKnowledgeDraftJob;
+use App\Models\Admin;
+use App\Models\ClientProject;
 use App\Models\EnterpriseKnowledgeProject;
 use App\Models\EnterpriseKnowledgeRevision;
 use App\Models\EnterpriseKnowledgeSource;
 use App\Services\GeoFlow\EnterpriseKnowledgeDraftService;
 use App\Services\GeoFlow\KnowledgeSourceParser;
+use App\Services\GeoFlow\ProjectAccessService;
 use App\Support\AdminWeb;
+use DomainException;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -30,11 +35,13 @@ class EnterpriseKnowledgeController extends Controller
     public function __construct(
         private readonly KnowledgeSourceParser $sourceParser,
         private readonly EnterpriseKnowledgeDraftService $draftService,
+        private readonly ProjectAccessService $projectAccess,
     ) {}
 
-    public function index(): View
+    public function index(Request $request): View
     {
-        $projects = EnterpriseKnowledgeProject::query()
+        $clientProject = $this->projectContext($request);
+        $projects = $this->projectsFor($clientProject)
             ->with(['publishedKnowledgeBase'])
             ->withCount(['sources', 'revisions'])
             ->latest()
@@ -48,8 +55,10 @@ class EnterpriseKnowledgeController extends Controller
         ]);
     }
 
-    public function create(): View
+    public function create(Request $request): View
     {
+        $this->projectContext($request, true);
+
         return view('admin.enterprise-knowledge.create', [
             'pageTitle' => __('admin.enterprise_knowledge.create_heading'),
             'activeMenu' => 'materials',
@@ -59,6 +68,7 @@ class EnterpriseKnowledgeController extends Controller
 
     public function store(Request $request): RedirectResponse
     {
+        $clientProject = $this->projectContext($request, true);
         $payload = $request->validate([
             'name' => ['nullable', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:1000'],
@@ -84,8 +94,12 @@ class EnterpriseKnowledgeController extends Controller
         }
 
         $storedPaths = [];
+        $project = null;
         try {
-            $parsedFiles = $this->sourceParser->parseUploadedKnowledgeFiles($uploadedFiles, $storedPaths, 'uploads/enterprise-knowledge');
+            $sourceDirectory = $clientProject instanceof ClientProject
+                ? 'uploads/enterprise-knowledge/projects/'.(int) $clientProject->getKey().'/sources'
+                : 'uploads/enterprise-knowledge';
+            $parsedFiles = $this->sourceParser->parseUploadedKnowledgeFiles($uploadedFiles, $storedPaths, $sourceDirectory);
             $mergedContent = $this->sourceParser->mergeKnowledgeSources($manualContent, $parsedFiles);
             $name = trim((string) ($payload['name'] ?? ''));
             $name = $name !== ''
@@ -98,13 +112,14 @@ class EnterpriseKnowledgeController extends Controller
                 ]);
             }
 
-            $project = DB::transaction(function () use ($name, $payload, $manualContent, $parsedFiles): EnterpriseKnowledgeProject {
+            $project = DB::transaction(function () use ($name, $payload, $manualContent, $parsedFiles, $clientProject): EnterpriseKnowledgeProject {
                 $project = EnterpriseKnowledgeProject::query()->create([
                     'name' => $name,
                     'description' => trim((string) ($payload['description'] ?? '')),
                     'status' => 'queued',
                     'structured_json' => $this->initialDraftProgressJson(),
                     'created_by_admin_id' => auth('admin')->id(),
+                    'client_project_id' => $clientProject?->getKey(),
                 ]);
 
                 $sortOrder = 0;
@@ -135,7 +150,23 @@ class EnterpriseKnowledgeController extends Controller
                 return $project;
             });
 
-            GenerateEnterpriseKnowledgeDraftJob::dispatch((int) $project->id, auth('admin')->id())->onQueue('geoflow');
+            try {
+                GenerateEnterpriseKnowledgeDraftJob::dispatch((int) $project->id, auth('admin')->id())->onQueue('geoflow');
+            } catch (Throwable $exception) {
+                $project->forceFill([
+                    'status' => 'failed',
+                    'error_message' => 'enterprise_knowledge_draft_dispatch_failed',
+                ])->save();
+                logger()->error('Enterprise knowledge draft dispatch failed.', [
+                    'exception_class' => $exception::class,
+                    'enterprise_knowledge_project_id' => $project->getKey(),
+                    'client_project_id' => $clientProject?->getKey(),
+                ]);
+
+                return redirect()
+                    ->route('admin.enterprise-knowledge.show', ['projectId' => (int) $project->id])
+                    ->withErrors('enterprise_knowledge_draft_dispatch_failed');
+            }
 
             return redirect()
                 ->route('admin.enterprise-knowledge.show', ['projectId' => (int) $project->id])
@@ -144,17 +175,23 @@ class EnterpriseKnowledgeController extends Controller
             $this->sourceParser->cleanupKnowledgeFiles($storedPaths);
             throw $exception;
         } catch (Throwable $exception) {
-            $this->sourceParser->cleanupKnowledgeFiles($storedPaths);
+            if (! $project instanceof EnterpriseKnowledgeProject) {
+                $this->sourceParser->cleanupKnowledgeFiles($storedPaths);
+            }
+            logger()->error('Enterprise knowledge creation failed.', [
+                'exception_class' => $exception::class,
+                'client_project_id' => $clientProject?->getKey(),
+            ]);
 
             return back()
                 ->withInput()
-                ->withErrors(__('admin.enterprise_knowledge.error.create_failed', ['message' => $exception->getMessage()]));
+                ->withErrors(__('admin.enterprise_knowledge.error.create_failed', ['message' => 'enterprise_knowledge_create_failed']));
         }
     }
 
-    public function show(int $projectId): View
+    public function show(Request $request, int $projectId): View
     {
-        $project = EnterpriseKnowledgeProject::query()
+        $project = $this->projectsFor($this->projectContext($request))
             ->with(['sources', 'revisions.creator', 'publishedKnowledgeBase'])
             ->whereKey($projectId)
             ->firstOrFail();
@@ -168,9 +205,9 @@ class EnterpriseKnowledgeController extends Controller
         ]);
     }
 
-    public function status(int $projectId): JsonResponse
+    public function status(Request $request, int $projectId): JsonResponse
     {
-        $project = EnterpriseKnowledgeProject::query()
+        $project = $this->projectsFor($this->projectContext($request))
             ->withCount(['sources', 'revisions'])
             ->whereKey($projectId)
             ->firstOrFail();
@@ -217,41 +254,71 @@ class EnterpriseKnowledgeController extends Controller
 
     public function autosave(Request $request, int $projectId): JsonResponse
     {
-        $project = EnterpriseKnowledgeProject::query()->whereKey($projectId)->firstOrFail();
+        $clientProject = $this->projectContext($request, true);
         $payload = $request->validate([
             'content' => ['required', 'string'],
+            'base_hash' => ['nullable', 'regex:/\A[a-f0-9]{64}\z/'],
         ]);
 
         $content = trim((string) $payload['content']);
+        if (strlen($content) > self::MAX_KNOWLEDGE_BYTES) {
+            throw ValidationException::withMessages([
+                'content' => __('admin.knowledge_bases.error.content_too_large'),
+            ]);
+        }
         $validationItems = $this->draftService->validateDraft($content);
-        $project->update([
-            'draft_content' => $content,
-            'validation_json' => json_encode($validationItems, JSON_UNESCAPED_UNICODE),
-            'status' => $project->status === 'published' ? 'reviewing' : (string) $project->status,
-        ]);
-        $this->recordRevisionIfChanged($project, $content, 'manual', __('admin.enterprise_knowledge.revision_manual'));
+        $contentHash = hash('sha256', $content);
+        DB::transaction(function () use ($clientProject, $projectId, $content, $validationItems, $payload): void {
+            $project = $this->projectsFor($clientProject)->lockForUpdate()->whereKey($projectId)->firstOrFail();
+            $this->assertCurrentDraftHash($project, $payload['base_hash'] ?? null);
+            $project->update([
+                'draft_content' => $content,
+                'validation_json' => json_encode($validationItems, JSON_UNESCAPED_UNICODE),
+                'status' => $project->status === 'published' ? 'reviewing' : (string) $project->status,
+            ]);
+            $this->recordRevisionIfChanged($project, $content, 'manual', __('admin.enterprise_knowledge.revision_manual'));
+        });
 
         return response()->json([
             'saved_at' => now()->format('Y-m-d H:i:s'),
             'validation_count' => count($validationItems),
             'validation_items' => $validationItems,
+            'content_hash' => $contentHash,
         ]);
     }
 
     public function validateDraft(Request $request, int $projectId): RedirectResponse|JsonResponse
     {
-        $project = EnterpriseKnowledgeProject::query()->whereKey($projectId)->firstOrFail();
-        $content = trim((string) $request->input('content', $project->draft_content ?? ''));
-        $validationItems = $this->draftService->validateDraft($content);
-        $project->update([
-            'draft_content' => $content,
-            'validation_json' => json_encode($validationItems, JSON_UNESCAPED_UNICODE),
+        $clientProject = $this->projectContext($request, true);
+        $payload = $request->validate([
+            'content' => ['nullable', 'string'],
+            'base_hash' => ['nullable', 'regex:/\A[a-f0-9]{64}\z/'],
         ]);
+        $submittedContent = array_key_exists('content', $payload) ? trim((string) $payload['content']) : null;
+        if ($submittedContent !== null && strlen($submittedContent) > self::MAX_KNOWLEDGE_BYTES) {
+            throw ValidationException::withMessages([
+                'content' => __('admin.knowledge_bases.error.content_too_large'),
+            ]);
+        }
+        $result = DB::transaction(function () use ($clientProject, $projectId, $submittedContent, $payload): array {
+            $project = $this->projectsFor($clientProject)->lockForUpdate()->whereKey($projectId)->firstOrFail();
+            $this->assertCurrentDraftHash($project, $payload['base_hash'] ?? null);
+            $content = $submittedContent ?? trim((string) $project->draft_content);
+            $validationItems = $this->draftService->validateDraft($content);
+            $project->update([
+                'draft_content' => $content,
+                'validation_json' => json_encode($validationItems, JSON_UNESCAPED_UNICODE),
+            ]);
+
+            return ['items' => $validationItems, 'content_hash' => hash('sha256', $content)];
+        });
+        $validationItems = $result['items'];
 
         if ($request->expectsJson()) {
             return response()->json([
                 'validation_count' => count($validationItems),
                 'validation_items' => $validationItems,
+                'content_hash' => $result['content_hash'],
             ]);
         }
 
@@ -260,7 +327,8 @@ class EnterpriseKnowledgeController extends Controller
 
     public function uploadImage(Request $request, int $projectId): JsonResponse
     {
-        EnterpriseKnowledgeProject::query()->whereKey($projectId)->firstOrFail();
+        $clientProject = $this->projectContext($request, true);
+        $this->projectsFor($clientProject)->whereKey($projectId)->firstOrFail();
 
         try {
             $payload = $request->validate([
@@ -280,7 +348,7 @@ class EnterpriseKnowledgeController extends Controller
                 ]);
             }
 
-            $stored = $this->storeEditorImageFile($file, (int) $projectId);
+            $stored = $this->storeEditorImageFile($file, (int) $projectId, $clientProject?->getKey());
             $alt = $this->normalizeImageAlt((string) ($payload['alt'] ?? ''));
             if ($alt === '') {
                 $alt = $this->readableImageAlt($file->getClientOriginalName());
@@ -306,52 +374,55 @@ class EnterpriseKnowledgeController extends Controller
         } catch (ValidationException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
-            report($exception);
+            logger()->error('Enterprise knowledge editor image upload failed.', [
+                'exception_class' => $exception::class,
+                'enterprise_knowledge_project_id' => $projectId,
+                'client_project_id' => $clientProject?->getKey(),
+            ]);
 
             return response()->json([
-                'message' => __('admin.enterprise_knowledge.error.upload_failed', [
-                    'message' => $exception->getMessage(),
-                ]),
+                'message' => __('admin.enterprise_knowledge.editor_upload_failed'),
             ], 422);
         }
     }
 
-    public function restoreRevision(int $projectId, int $revisionId): RedirectResponse
+    public function restoreRevision(Request $request, int $projectId, int $revisionId): RedirectResponse
     {
-        $project = EnterpriseKnowledgeProject::query()->whereKey($projectId)->firstOrFail();
-        $revision = EnterpriseKnowledgeRevision::query()
-            ->where('enterprise_knowledge_project_id', (int) $project->id)
-            ->whereKey($revisionId)
-            ->firstOrFail();
+        $clientProject = $this->projectContext($request, true);
+        DB::transaction(function () use ($clientProject, $projectId, $revisionId): void {
+            $project = $this->projectsFor($clientProject)->lockForUpdate()->whereKey($projectId)->firstOrFail();
+            $revision = EnterpriseKnowledgeRevision::query()
+                ->where('enterprise_knowledge_project_id', (int) $project->id)
+                ->whereKey($revisionId)
+                ->firstOrFail();
 
-        $content = (string) $revision->content;
-        $project->update([
-            'draft_content' => $content,
-            'validation_json' => json_encode($this->draftService->validateDraft($content), JSON_UNESCAPED_UNICODE),
-            'status' => 'reviewing',
-        ]);
-        $this->recordRevision($project, $content, 'restore', __('admin.enterprise_knowledge.revision_restore'));
+            $content = (string) $revision->content;
+            $project->update([
+                'draft_content' => $content,
+                'validation_json' => json_encode($this->draftService->validateDraft($content), JSON_UNESCAPED_UNICODE),
+                'status' => 'reviewing',
+            ]);
+            $this->recordRevisionIfChanged($project, $content, 'restore', __('admin.enterprise_knowledge.revision_restore'));
+        });
 
         return back()->with('message', __('admin.enterprise_knowledge.message.restored'));
     }
 
-    public function publish(int $projectId): RedirectResponse
+    public function publish(Request $request, int $projectId): RedirectResponse
     {
-        $project = EnterpriseKnowledgeProject::query()->whereKey($projectId)->firstOrFail();
+        $clientProject = $this->projectContext($request, true);
+        $project = $this->projectsFor($clientProject)->whereKey($projectId)->firstOrFail();
         $content = trim((string) ($project->draft_content ?? ''));
         if ($content === '') {
             return back()->withErrors(__('admin.enterprise_knowledge.error.content_required'));
         }
 
-        $result = $this->draftService->publishToKnowledgeBase($project, $content);
+        try {
+            $result = $this->draftService->publishToKnowledgeBase($project, $content, $request->user('admin')?->getKey());
+        } catch (DomainException $exception) {
+            return back()->withErrors($exception->getMessage());
+        }
         $knowledgeBase = $result['knowledge_base'];
-        $project->update([
-            'status' => 'published',
-            'published_knowledge_base_id' => (int) $knowledgeBase->id,
-            'validation_json' => json_encode($this->draftService->validateDraft($content), JSON_UNESCAPED_UNICODE),
-            'error_message' => $result['chunk_error'],
-        ]);
-        $this->recordRevision($project, $content, 'publish', __('admin.enterprise_knowledge.revision_publish'));
 
         if ((string) $result['chunk_error'] !== '') {
             return back()->withErrors(__('admin.enterprise_knowledge.message.published_with_chunk_error', [
@@ -364,12 +435,27 @@ class EnterpriseKnowledgeController extends Controller
             ->with('message', __('admin.enterprise_knowledge.message.published_queued'));
     }
 
-    public function destroy(int $projectId): RedirectResponse
+    public function destroy(Request $request, int $projectId): RedirectResponse
     {
-        $project = EnterpriseKnowledgeProject::query()->with('sources')->whereKey($projectId)->firstOrFail();
-        $this->sourceParser->cleanupKnowledgeFiles($project->sources->pluck('file_path')->filter()->map(static fn ($path): string => (string) $path)->values()->all());
-        Storage::disk('public')->deleteDirectory('uploads/enterprise-knowledge/'.(int) $project->id);
-        $project->delete();
+        $clientProject = $this->projectContext($request, true);
+        $project = $this->projectsFor($clientProject)->with('sources')->whereKey($projectId)->firstOrFail();
+        $sourcePaths = $project->sources->pluck('file_path')->filter()->map(static fn ($path): string => (string) $path)->values()->all();
+        $imageDirectory = $this->editorImageDirectory((int) $project->id, $clientProject?->getKey());
+
+        DB::transaction(function () use ($project): void {
+            $project->delete();
+        });
+
+        try {
+            $this->sourceParser->cleanupKnowledgeFiles($sourcePaths);
+            Storage::disk('public')->deleteDirectory($imageDirectory);
+        } catch (Throwable $exception) {
+            logger()->warning('Enterprise knowledge files could not be fully cleaned after deletion.', [
+                'exception_class' => $exception::class,
+                'enterprise_knowledge_project_id' => $projectId,
+                'client_project_id' => $clientProject?->getKey(),
+            ]);
+        }
 
         return redirect()
             ->route('admin.enterprise-knowledge.index')
@@ -381,7 +467,7 @@ class EnterpriseKnowledgeController extends Controller
         $hash = hash('sha256', $content);
         $latestHash = (string) EnterpriseKnowledgeRevision::query()
             ->where('enterprise_knowledge_project_id', (int) $project->id)
-            ->latest()
+            ->latest('id')
             ->value('content_hash');
 
         if ($latestHash === $hash) {
@@ -403,13 +489,13 @@ class EnterpriseKnowledgeController extends Controller
         ]);
     }
 
-    private function storeEditorImageFile(UploadedFile $file, int $projectId): array
+    private function storeEditorImageFile(UploadedFile $file, int $projectId, ?int $clientProjectId): array
     {
         if (! $file->isValid()) {
             throw new RuntimeException(__('admin.enterprise_knowledge.error.upload_missing'));
         }
 
-        $directory = 'uploads/enterprise-knowledge/'.$projectId.'/images/'.now()->format('Y/m');
+        $directory = $this->editorImageDirectory($projectId, $clientProjectId).'/'.now()->format('Y/m');
         $extension = strtolower($file->guessExtension() ?: $file->getClientOriginalExtension() ?: 'jpg');
         $extension = $extension === 'jpeg' ? 'jpg' : $extension;
         if (! in_array($extension, ['jpg', 'png', 'gif', 'webp'], true)) {
@@ -460,6 +546,61 @@ class EnterpriseKnowledgeController extends Controller
                 'updated_at' => now()->toIso8601String(),
             ],
         ], JSON_UNESCAPED_UNICODE) ?: '{}';
+    }
+
+    private function editorImageDirectory(int $projectId, ?int $clientProjectId): string
+    {
+        return $clientProjectId === null
+            ? 'uploads/enterprise-knowledge/'.$projectId.'/images'
+            : 'uploads/enterprise-knowledge/projects/'.$clientProjectId.'/'.$projectId.'/images';
+    }
+
+    private function assertCurrentDraftHash(EnterpriseKnowledgeProject $project, mixed $baseHash): void
+    {
+        if (is_string($baseHash)
+            && ! hash_equals(hash('sha256', (string) $project->draft_content), $baseHash)) {
+            abort(409, 'enterprise_knowledge_draft_stale');
+        }
+    }
+
+    private function projectContext(Request $request, bool $write = false): ?ClientProject
+    {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof Admin, 401);
+
+        $hadExplicitTarget = (int) $request->session()->get(ProjectAccessService::SESSION_KEY, 0) > 0;
+        $project = $request->attributes->get('project_context');
+        if (! $project instanceof ClientProject) {
+            $project = $this->projectAccess->resolveContext($request, $admin);
+        }
+
+        if ($project instanceof ClientProject) {
+            $write
+                ? $this->projectAccess->requireWrite($admin, $project, true)
+                : $this->projectAccess->requireRead($admin, $project);
+
+            return $project;
+        }
+
+        if ($hadExplicitTarget) {
+            abort(403, 'project_context_inactive_or_forbidden');
+        }
+
+        // Fresh/legacy installations without a client-project owner retain the
+        // original super-admin path until the phase-5A backfill creates projects.
+        abort_unless($admin->isSuperAdmin() && ! ClientProject::query()->exists(), 409, 'project_context_required');
+
+        return null;
+    }
+
+    /** @return Builder<EnterpriseKnowledgeProject> */
+    private function projectsFor(?ClientProject $clientProject): Builder
+    {
+        $query = EnterpriseKnowledgeProject::query();
+
+        return $clientProject instanceof ClientProject
+            ? $query->where('client_project_id', (int) $clientProject->getKey())
+            : $query->whereNull('client_project_id');
     }
 
     private function enterpriseKnowledgeTranslation(string $key, string $fallback): string

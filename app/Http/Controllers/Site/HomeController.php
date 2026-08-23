@@ -51,7 +51,7 @@ class HomeController extends Controller
             $categoryMissing = ! $category instanceof Category;
         }
 
-        $query = Article::query()->with(['category', 'author'])->published();
+        $query = Article::query()->with(['category', 'author'])->centralSitePublic();
 
         if ($search !== '') {
             $escaped = $this->escapeLike(mb_strtolower($search));
@@ -78,7 +78,7 @@ class HomeController extends Controller
             if (Schema::hasColumn('articles', 'is_featured')) {
                 $featuredArticles = Article::query()
                     ->with(['category', 'author'])
-                    ->published()
+                    ->centralSitePublic()
                     ->where('is_featured', true)
                     ->orderByDesc('published_at')
                     ->orderByDesc('id')
@@ -89,7 +89,7 @@ class HomeController extends Controller
             if (Schema::hasColumn('articles', 'is_hot')) {
                 $hotArticles = Article::query()
                     ->with(['category', 'author'])
-                    ->published()
+                    ->centralSitePublic()
                     ->where('is_hot', true)
                     ->orderByDesc('published_at')
                     ->orderByDesc('id')

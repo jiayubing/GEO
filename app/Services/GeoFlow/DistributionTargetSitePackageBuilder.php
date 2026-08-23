@@ -52,9 +52,18 @@ class DistributionTargetSitePackageBuilder
     private function config(DistributionChannel $channel, string $keyId, string $plainSecret): string
     {
         $siteSettings = $channel->resolvedSiteSettings();
+        $targetSettings = $channel->targetSiteSettingsPayload();
+        $projectSiteIdentity = is_array($targetSettings['project_site_identity'] ?? null)
+            ? $targetSettings['project_site_identity']
+            : null;
         $frontMode = method_exists($channel, 'frontMode') ? $channel->frontMode() : (string) ($channel->front_mode ?? 'static');
         $frontMode = in_array($frontMode, ['static', 'rewrite'], true) ? $frontMode : 'static';
         $staticPublishEnabled = $frontMode === 'static';
+        // A project-bound public package uses only the persisted canonical
+        // identity. An unbound legacy channel keeps its existing endpoint URL.
+        $publicBaseUrl = is_array($projectSiteIdentity)
+            ? (string) ($projectSiteIdentity['canonical_url'] ?? '')
+            : rtrim((string) $channel->endpoint_url, '/');
         $config = [
             'site_name' => $siteSettings['site_name'],
             'site_subtitle' => $siteSettings['site_subtitle'],
@@ -77,8 +86,9 @@ class DistributionTargetSitePackageBuilder
             'package_version' => (string) config('geoflow.app_version', ''),
             'static_publish_enabled' => $staticPublishEnabled,
             'domain' => (string) $channel->domain,
-            'public_base_url' => rtrim((string) $channel->endpoint_url, '/'),
-            'base_path' => $this->basePath((string) $channel->endpoint_url),
+            'public_base_url' => $publicBaseUrl,
+            'base_path' => $this->basePath($publicBaseUrl),
+            'project_site_identity' => $projectSiteIdentity,
             'static_output_dir' => '__DIR__',
             'key_id' => $keyId,
             'secret' => $plainSecret,
@@ -111,6 +121,7 @@ class DistributionTargetSitePackageBuilder
             ."    'domain' => ".var_export($config['domain'], true).",\n"
             ."    'public_base_url' => ".var_export($config['public_base_url'], true).",\n"
             ."    'base_path' => ".var_export($config['base_path'], true).",\n"
+            ."    'project_site_identity' => ".var_export($config['project_site_identity'], true).",\n"
             ."    'static_output_dir' => ".$config['static_output_dir'].",\n"
             ."    'key_id' => ".var_export($config['key_id'], true).",\n"
             ."    'secret' => ".var_export($config['secret'], true).",\n"
@@ -159,6 +170,10 @@ HTACCESS;
 
     private function initialStaticIndex(DistributionChannel $channel): string
     {
+        $identity = $channel->targetSiteSettingsPayload()['project_site_identity'] ?? null;
+        if (is_array($identity) && (string) ($identity['status'] ?? '') === 'disabled') {
+            return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Not Found</title></head><body><main><h1>Not Found</h1></main></body></html>';
+        }
         $settings = $channel->resolvedSiteSettings();
         $siteName = (string) $settings['site_name'];
         $description = (string) $settings['site_description'];
@@ -465,7 +480,11 @@ HTACCESS;
 
     private function initialCanonicalUrl(DistributionChannel $channel): string
     {
-        $base = trim((string) $channel->endpoint_url);
+        $targetSettings = $channel->targetSiteSettingsPayload();
+        $identity = $targetSettings['project_site_identity'] ?? null;
+        $base = is_array($identity)
+            ? trim((string) ($identity['canonical_url'] ?? ''))
+            : trim((string) $channel->endpoint_url);
         if ($base === '') {
             $domain = trim((string) $channel->domain);
             $base = $domain !== '' ? 'https://'.$domain : '';
@@ -538,10 +557,14 @@ HTACCESS;
 
     private function initialLlmsText(DistributionChannel $channel): string
     {
+        $identity = $channel->targetSiteSettingsPayload()['project_site_identity'] ?? null;
+        if (is_array($identity) && (string) ($identity['status'] ?? '') === 'disabled') {
+            return '';
+        }
         $settings = $channel->resolvedSiteSettings();
         $siteName = (string) $settings['site_name'];
         $description = trim((string) $settings['site_description']);
-        $homeUrl = $this->publicFrontBaseUrl((string) $channel->endpoint_url).'/';
+        $homeUrl = $this->initialCanonicalUrl($channel);
 
         return "# {$siteName}\n\n"
             .($description !== '' ? "> {$description}\n\n" : '')
@@ -554,7 +577,12 @@ HTACCESS;
 
     private function initialSitemapText(DistributionChannel $channel): string
     {
-        return $this->publicFrontBaseUrl((string) $channel->endpoint_url)."/\n";
+        $identity = $channel->targetSiteSettingsPayload()['project_site_identity'] ?? null;
+        if (is_array($identity) && (string) ($identity['status'] ?? '') === 'disabled') {
+            return '';
+        }
+
+        return $this->initialCanonicalUrl($channel)."\n";
     }
 
     private function publicFrontBaseUrl(string $endpointUrl): string
@@ -1112,7 +1140,94 @@ function normalizeSiteSettings(array $settings, array $config = []): array
         'article_text_ads' => normalizeArticleTextAds($settings['article_text_ads'] ?? $config['article_text_ads'] ?? []),
         'active_theme' => trim((string) ($settings['active_theme'] ?? $config['active_theme'] ?? '')),
         'front_mode' => $frontMode,
+        'project_site_identity' => normalizeProjectSiteIdentity(
+            $settings['project_site_identity'] ?? null,
+            $config['project_site_identity'] ?? null,
+        ),
     ];
+}
+
+function normalizeProjectSiteIdentity(mixed $identity, mixed $fallback = null): ?array
+{
+    $candidate = is_array($identity) ? $identity : (is_array($fallback) ? $fallback : null);
+    if (! is_array($candidate)) {
+        return null;
+    }
+
+    $status = (string) ($candidate['status'] ?? '');
+    $canonicalUrl = trim((string) ($candidate['canonical_url'] ?? ''));
+    $canonicalIdentity = trim((string) ($candidate['canonical_identity'] ?? ''));
+    $projectId = (int) ($candidate['project_id'] ?? 0);
+    $projectSlug = trim((string) ($candidate['project_slug'] ?? ''));
+    if (! in_array($status, ['active', 'disabled'], true)
+        || ! filter_var($canonicalUrl, FILTER_VALIDATE_URL)
+        || ! str_starts_with($canonicalIdentity, 'project-channel-site:v1:')
+        || $projectId <= 0 || $projectSlug === '') {
+        return is_array($fallback) && $fallback !== $candidate
+            ? normalizeProjectSiteIdentity($fallback)
+            : null;
+    }
+
+    return [
+        'version' => '1',
+        'status' => $status,
+        'canonical_url' => rtrim($canonicalUrl, '/'),
+        'canonical_identity' => $canonicalIdentity,
+        'project_id' => $projectId,
+        'project_slug' => $projectSlug,
+    ];
+}
+
+function projectSiteIdentity(array $config): ?array
+{
+    $settings = siteSettings($config);
+
+    return is_array($settings['project_site_identity'] ?? null) ? $settings['project_site_identity'] : null;
+}
+
+function projectSiteIdentityDisabled(array $config): bool
+{
+    $identity = projectSiteIdentity($config);
+
+    return is_array($identity) && (string) ($identity['status'] ?? '') === 'disabled';
+}
+
+function articleMatchesProjectSiteIdentity(array $article, ?array $identity): bool
+{
+    if (! is_array($identity)) {
+        return true;
+    }
+
+    $recordIdentity = $article['_project_site_identity'] ?? null;
+    if (! is_array($recordIdentity)) {
+        return false;
+    }
+
+    return (int) ($recordIdentity['project_id'] ?? 0) === (int) ($identity['project_id'] ?? 0)
+        && hash_equals((string) ($identity['canonical_identity'] ?? ''), (string) ($recordIdentity['canonical_identity'] ?? ''));
+}
+
+function assertProjectSiteArticlePayload(array $config, array $payload): array
+{
+    $identity = projectSiteIdentity($config);
+    if (! is_array($identity)) {
+        return [];
+    }
+    if ((string) ($identity['status'] ?? '') !== 'active') {
+        jsonResponse(409, ['ok' => false, 'error' => 'project_site_identity_disabled']);
+    }
+
+    $payloadIdentity = $payload['project_site_identity'] ?? null;
+    $article = $payload['article'] ?? null;
+    if (! is_array($payloadIdentity) || ! is_array($article)
+        || (int) ($payloadIdentity['project_id'] ?? 0) !== (int) $identity['project_id']
+        || (int) ($article['project_id'] ?? 0) !== (int) $identity['project_id']
+        || ! hash_equals((string) $identity['canonical_identity'], (string) ($payloadIdentity['canonical_identity'] ?? ''))
+        || ! hash_equals((string) $identity['canonical_url'], rtrim((string) ($payloadIdentity['canonical_url'] ?? ''), '/'))) {
+        jsonResponse(403, ['ok' => false, 'error' => 'project_site_identity_mismatch']);
+    }
+
+    return $identity;
 }
 
 function siteSettings(array $config): array
@@ -1656,6 +1771,14 @@ function staticPublishEnabled(array $config): bool
         && (bool) ($config['static_publish_enabled'] ?? true);
 }
 
+function renderDisabledPageHtml(array $config): string
+{
+    $siteName = h((string) (siteSettings($config)['site_name'] ?? 'GEOFlow Target Site'));
+
+    return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>'
+        .$siteName.'</title></head><body><main><h1>Not Found</h1></main></body></html>';
+}
+
 function staticRoot(array $config): string
 {
     return rtrim((string) ($config['static_output_dir'] ?? dirname(__DIR__)), '/');
@@ -1860,6 +1983,15 @@ function rebuildStaticSite(array $config): array
         return ['enabled' => false, 'articles' => 0];
     }
 
+    if (projectSiteIdentityDisabled($config)) {
+        writeStaticFile($config, 'index.html', renderDisabledPageHtml($config));
+        writeStaticFile($config, 'llms.txt', '');
+        writeStaticFile($config, 'sitemap.txt', '');
+        $removed = pruneStaticArticlePages($config, []);
+
+        return ['enabled' => true, 'disabled' => true, 'articles' => 0, 'removed' => $removed];
+    }
+
     writeStaticFile($config, 'index.html', renderHomePageHtml($config));
     writeStaticFile($config, 'llms.txt', renderLlmsText($config));
     writeStaticFile($config, 'sitemap.txt', renderSitemapText($config));
@@ -2028,9 +2160,13 @@ function articleFiles(array $config): array
 function loadArticles(array $config): array
 {
     $articles = [];
+    $identity = projectSiteIdentity($config);
     foreach (articleFiles($config) as $file) {
         $record = json_decode((string) file_get_contents($file), true);
         if (! is_array($record) || ! is_array($record['article'] ?? null)) {
+            continue;
+        }
+        if (! articleMatchesProjectSiteIdentity($record['article'], $identity)) {
             continue;
         }
         $record['article']['_file'] = $file;
@@ -2892,6 +3028,7 @@ function handleFrontendCapabilities(array $config, string $method, string $path,
         'supports_home_carousel_slides' => true,
         'supports_article_text_ads' => true,
         'supports_static_generation' => ! empty($config['static_publish_enabled']),
+        'supports_project_site_identity' => true,
     ]);
 }
 
@@ -2908,7 +3045,11 @@ function handleArticlePublish(array $config, string $method, string $path, strin
     }
 
     ensureStorage($config);
+    $identity = assertProjectSiteArticlePayload($config, $payload);
     $article = localizeArticleAssets($config, $payload['article'], is_array($payload['assets'] ?? null) ? $payload['assets'] : []);
+    if ($identity !== []) {
+        $article['_project_site_identity'] = $identity;
+    }
     $slug = is_scalar($article['slug'] ?? null) && (string) $article['slug'] !== '' ? (string) $article['slug'] : 'article-'.(string) ($article['id'] ?? hash('sha256', (string) $verified['idempotency_key']));
     $file = storageDir($config).'/'.safeFileName($slug).'.json';
     $response = [
@@ -2942,7 +3083,11 @@ function handleArticleUpdate(array $config, string $method, string $path, string
     }
 
     ensureStorage($config);
+    $identity = assertProjectSiteArticlePayload($config, $payload);
     $article = localizeArticleAssets($config, $payload['article'], is_array($payload['assets'] ?? null) ? $payload['assets'] : []);
+    if ($identity !== []) {
+        $article['_project_site_identity'] = $identity;
+    }
     $slug = is_scalar($article['slug'] ?? null) && (string) $article['slug'] !== '' ? (string) $article['slug'] : $pathSlug;
     if ($slug === '') {
         jsonResponse(422, ['ok' => false, 'error' => 'missing_slug']);
@@ -2985,6 +3130,12 @@ function handleArticleDelete(array $config, string $method, string $path, string
     ensureStorage($config);
     $file = storageDir($config).'/'.safeFileName($slug).'.json';
     if (is_file($file)) {
+        $record = json_decode((string) file_get_contents($file), true);
+        $identity = projectSiteIdentity($config);
+        if (is_array($identity) && (! is_array($record) || ! is_array($record['article'] ?? null)
+            || ! articleMatchesProjectSiteIdentity($record['article'], $identity))) {
+            jsonResponse(404, ['ok' => false, 'error' => 'project_site_article_not_found']);
+        }
         @unlink($file);
     }
     removeStaticArticle($config, $slug);
@@ -3011,6 +3162,14 @@ function handleSiteSettingsUpdate(array $config, string $method, string $path, s
     }
 
     ensureStorage($config);
+    $configuredIdentity = normalizeProjectSiteIdentity($config['project_site_identity'] ?? null);
+    $incomingIdentity = normalizeProjectSiteIdentity($payload['settings']['project_site_identity'] ?? null, $configuredIdentity);
+    if (is_array($configuredIdentity) && (! is_array($incomingIdentity)
+        || (int) $incomingIdentity['project_id'] !== (int) $configuredIdentity['project_id']
+        || ! hash_equals((string) $configuredIdentity['canonical_identity'], (string) $incomingIdentity['canonical_identity'])
+        || ! hash_equals((string) $configuredIdentity['canonical_url'], (string) $incomingIdentity['canonical_url']))) {
+        jsonResponse(403, ['ok' => false, 'error' => 'project_site_identity_mismatch']);
+    }
     $settings = normalizeSiteSettings($payload['settings'], $config);
     writeJsonFile(siteSettingsFile($config), $settings, 'site_settings_not_writable');
     $static = rebuildStaticSite($config);
@@ -3050,6 +3209,10 @@ if ($method === 'POST' && preg_match('#^/geoflow-agent/v1/articles/([^/]+)/delet
 }
 if ($method === 'POST' && $path === '/geoflow-agent/v1/site-settings') {
     handleSiteSettingsUpdate($config, $method, $path, $body);
+}
+if ($method === 'GET' && projectSiteIdentityDisabled($config)) {
+    http_response_code(404);
+    exit;
 }
 if ($method === 'GET' && $path === '/') {
     renderHomePage($config);

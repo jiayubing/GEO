@@ -3,28 +3,40 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
+use App\Models\ClientProject;
 use App\Models\KeywordLibrary;
 use App\Models\KnowledgeBase;
 use App\Models\TitleLibrary;
 use App\Models\UrlImportJob;
 use App\Models\UrlImportJobLog;
+use App\Services\GeoFlow\ProjectAccessService;
+use App\Services\GeoFlow\UrlImportJobCreationService;
 use App\Services\GeoFlow\UrlImportProcessingService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\View\View;
 
 class UrlImportController extends Controller
 {
-    public function __construct(private readonly UrlImportProcessingService $urlImportProcessingService) {}
+    public function __construct(
+        private readonly UrlImportProcessingService $urlImportProcessingService,
+        private readonly UrlImportJobCreationService $urlImportJobs,
+        private readonly ProjectAccessService $projectAccess,
+    ) {}
 
-    public function index(): View
+    public function index(Request $request): View
     {
+        $project = $this->projectContext($request);
+
         return view('admin.url-import.index', [
             'pageTitle' => __('admin.url_import.page_title'),
             'activeMenu' => 'materials',
-            'stats' => $this->loadStats(),
+            'stats' => $this->loadStats($project),
             'aiModelReady' => $this->urlImportProcessingService->hasReadyAnalysisModel(),
             'aiModelConfigUrl' => route('admin.ai-models.index'),
         ]);
@@ -32,6 +44,7 @@ class UrlImportController extends Controller
 
     public function store(Request $request): RedirectResponse
     {
+        $project = $this->projectContext($request, true);
         $validated = $request->validate([
             'url' => ['required', 'string', 'max:2048'],
             'project_name' => ['nullable', 'string', 'max:120'],
@@ -48,57 +61,44 @@ class UrlImportController extends Controller
             return back()->withInput()->withErrors(['url' => $exception->getMessage()]);
         }
 
+        $duplicate = $this->urlImportJobs->findDuplicate($project, $normalized['url']);
+        if ($duplicate !== null) {
+            return redirect()->route('admin.url-import.show', ['jobId' => $duplicate->id]);
+        }
+
         try {
             $this->urlImportProcessingService->assertAnalysisModelReady();
-        } catch (\Throwable $exception) {
+        } catch (\Throwable) {
             return redirect()
                 ->route('admin.ai-models.index')
                 ->withInput()
-                ->withErrors(['ai_model' => $exception->getMessage()]);
+                ->withErrors(['ai_model' => __('admin.url_import.error.ai_model_required')]);
         }
 
-        $job = UrlImportJob::query()->create([
-            'url' => $validated['url'],
-            'normalized_url' => $normalized['url'],
-            'source_domain' => $normalized['host'],
-            'page_title' => $validated['project_name'] ?? '',
-            'status' => 'queued',
-            'current_step' => 'queued',
-            'progress_percent' => 0,
-            'options_json' => json_encode([
-                'project_name' => $validated['project_name'] ?? '',
-                'source_label' => $validated['source_label'] ?? '',
-                'content_language' => $validated['content_language'] ?? '',
-                'notes' => $validated['notes'] ?? '',
-                'outputs' => $validated['outputs'] ?? ['knowledge', 'keywords', 'titles'],
-            ], JSON_UNESCAPED_UNICODE),
-            'result_json' => '',
-            'error_message' => '',
-            'created_by' => Auth::guard('admin')->user()?->username ?? '',
-        ]);
+        $creation = $this->urlImportJobs->create(
+            $project,
+            $normalized,
+            $validated,
+            Auth::guard('admin')->user()?->username ?? '',
+        );
 
-        UrlImportJobLog::query()->create([
-            'job_id' => $job->id,
-            'step' => 'queued',
-            'level' => 'info',
-            'message' => __('admin.url_import.section.new_job_desc'),
-        ]);
-
-        return redirect()->route('admin.url-import.show', ['jobId' => $job->id]);
+        return redirect()->route('admin.url-import.show', ['jobId' => $creation['job']->id]);
     }
 
-    public function run(int $jobId): JsonResponse
+    public function run(Request $request, int $jobId): JsonResponse
     {
-        $job = UrlImportJob::query()->whereKey($jobId)->firstOrFail();
+        $project = $this->projectContext($request, true, true);
+        $job = $this->jobForProject($jobId, $project);
 
         if (in_array($job->status, ['queued', 'failed'], true)) {
             try {
                 $this->urlImportProcessingService->assertAnalysisModelReady();
             } catch (\Throwable $exception) {
+                $errorCode = 'url_import_analysis_model_unavailable';
                 $job->update([
                     'status' => 'failed',
                     'progress_percent' => max(1, (int) $job->progress_percent),
-                    'error_message' => $exception->getMessage(),
+                    'error_message' => $errorCode,
                     'finished_at' => now(),
                 ]);
 
@@ -106,7 +106,7 @@ class UrlImportController extends Controller
                     'job_id' => $job->id,
                     'step' => $job->current_step ?: 'queued',
                     'level' => 'error',
-                    'message' => __('admin.url_import.log.failed', ['message' => $exception->getMessage()]),
+                    'message' => __('admin.url_import.log.failed', ['message' => $errorCode]),
                 ]);
 
                 return response()->json($this->statusPayload($job->refresh()), 422);
@@ -115,15 +115,7 @@ class UrlImportController extends Controller
             if (app()->runningUnitTests()) {
                 $job = $this->urlImportProcessingService->process($job);
             } else {
-                $job->update([
-                    'status' => 'running',
-                    'current_step' => $job->current_step ?: 'queued',
-                    'progress_percent' => max(0, (int) $job->progress_percent),
-                    'error_message' => '',
-                    'started_at' => $job->started_at ?: now(),
-                ]);
-
-                if (! $this->spawnUrlImportWorker((int) $job->id)) {
+                if (! $this->spawnUrlImportWorker($job)) {
                     $job = $this->urlImportProcessingService->process($job->refresh());
                 }
             }
@@ -132,16 +124,17 @@ class UrlImportController extends Controller
         return response()->json($this->statusPayload($job->refresh()));
     }
 
-    public function status(int $jobId): JsonResponse
+    public function status(Request $request, int $jobId): JsonResponse
     {
-        $job = UrlImportJob::query()->whereKey($jobId)->firstOrFail();
+        $job = $this->jobForProject($jobId, $this->projectContext($request, false, true));
 
         return response()->json($this->statusPayload($job));
     }
 
-    public function commit(int $jobId): RedirectResponse
+    public function commit(Request $request, int $jobId): RedirectResponse
     {
-        $job = UrlImportJob::query()->whereKey($jobId)->firstOrFail();
+        $legacyContext = $request->boolean('legacy');
+        $job = $this->jobForProject($jobId, $this->projectContext($request, true, true));
 
         try {
             $summary = $this->urlImportProcessingService->commit($job);
@@ -150,7 +143,7 @@ class UrlImportController extends Controller
         }
 
         return redirect()
-            ->route('admin.url-import.show', ['jobId' => $jobId])
+            ->route('admin.url-import.show', ['jobId' => $jobId, 'legacy' => $legacyContext ?: null])
             ->with('message', __('admin.url_import.commit.success').'：'.__('admin.url_import_history.import.summary', [
                 'knowledge_base' => $summary['knowledge_base'],
                 'keywords' => $summary['keywords'],
@@ -158,9 +151,10 @@ class UrlImportController extends Controller
             ]));
     }
 
-    public function show(int $jobId): View
+    public function show(Request $request, int $jobId): View
     {
-        $job = UrlImportJob::query()->findOrFail($jobId);
+        $legacyContext = $request->boolean('legacy');
+        $job = $this->jobForProject($jobId, $this->projectContext($request, false, true));
 
         $job->load(['logs' => fn ($query) => $query->oldest()->limit(120)]);
 
@@ -170,30 +164,35 @@ class UrlImportController extends Controller
             'job' => $job,
             'result' => $this->decodeJson((string) $job->result_json),
             'logs' => $job->logs,
+            'legacyContext' => $legacyContext,
         ]);
     }
 
-    public function history(): View
+    public function history(Request $request): View
     {
+        $legacyContext = $request->boolean('legacy');
+        $jobs = $this->scopedJobs($this->projectContext($request, false, true));
+
         return view('admin.url-import.history', [
             'pageTitle' => __('admin.url_import_history.page_title'),
             'activeMenu' => 'materials',
-            'jobs' => UrlImportJob::query()->latest()->paginate(20),
+            'jobs' => (clone $jobs)->latest()->paginate(20)->withQueryString(),
+            'legacyContext' => $legacyContext,
             'stats' => [
-                'total' => UrlImportJob::query()->count(),
-                'completed' => UrlImportJob::query()->where('status', 'completed')->count(),
-                'running' => UrlImportJob::query()->whereIn('status', ['queued', 'running'])->count(),
-                'failed' => UrlImportJob::query()->where('status', 'failed')->count(),
+                'total' => (clone $jobs)->count(),
+                'completed' => (clone $jobs)->where('status', 'completed')->count(),
+                'running' => (clone $jobs)->whereIn('status', ['queued', 'running'])->count(),
+                'failed' => (clone $jobs)->where('status', 'failed')->count(),
             ],
         ]);
     }
 
-    private function loadStats(): array
+    private function loadStats(?ClientProject $project): array
     {
         return [
-            'knowledge_bases' => KnowledgeBase::query()->count(),
-            'keyword_libraries' => KeywordLibrary::query()->count(),
-            'title_libraries' => TitleLibrary::query()->count(),
+            'knowledge_bases' => $this->scopedOwnerCount(KnowledgeBase::class, $project),
+            'keyword_libraries' => $this->scopedOwnerCount(KeywordLibrary::class, $project),
+            'title_libraries' => $this->scopedOwnerCount(TitleLibrary::class, $project),
         ];
     }
 
@@ -211,30 +210,82 @@ class UrlImportController extends Controller
         return is_array($decoded) ? $decoded : [];
     }
 
-    private function spawnUrlImportWorker(int $jobId): bool
+    private function spawnUrlImportWorker(UrlImportJob $job): bool
     {
-        if (! function_exists('exec')) {
+        try {
+            $arguments = [
+                'jobId' => (int) $job->getKey(),
+            ];
+            if ($job->client_project_id === null) {
+                $arguments['--legacy'] = true;
+            } else {
+                $arguments['--project'] = (int) $job->client_project_id;
+            }
+            Artisan::queue('geoflow:process-url-import', $arguments);
+
+            return true;
+        } catch (\Throwable) {
             return false;
         }
+    }
 
-        $phpBinary = PHP_BINARY ?: 'php';
-        if (str_contains(basename($phpBinary), 'php-fpm')) {
-            $phpBinary = 'php';
+    private function projectContext(Request $request, bool $write = false, bool $allowLegacyCompatibility = false): ?ClientProject
+    {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof Admin, 401);
+
+        if ($request->boolean('legacy')) {
+            abort_unless($allowLegacyCompatibility && $admin->isSuperAdmin(), 403, 'legacy_url_import_forbidden');
+
+            return null;
         }
 
-        $command = sprintf(
-            '%s %s geoflow:process-url-import %d > %s 2>&1 & echo $!',
-            escapeshellarg($phpBinary),
-            escapeshellarg(base_path('artisan')),
-            $jobId,
-            escapeshellarg(storage_path('logs/url-import-worker-'.$jobId.'.log'))
+        $hadExplicitTarget = (int) $request->session()->get(ProjectAccessService::SESSION_KEY, 0) > 0;
+        $project = $request->attributes->get('project_context');
+        if (! $project instanceof ClientProject) {
+            $project = $this->projectAccess->resolveContext($request, $admin);
+        }
+
+        if ($project instanceof ClientProject) {
+            $write
+                ? $this->projectAccess->requireWrite($admin, $project, true)
+                : $this->projectAccess->requireRead($admin, $project);
+
+            return $project;
+        }
+
+        if ($hadExplicitTarget) {
+            abort(403, 'project_context_inactive_or_forbidden');
+        }
+
+        abort_unless($admin->isSuperAdmin() && ! ClientProject::query()->exists(), 409, 'project_context_required');
+
+        return null;
+    }
+
+    /** @return Builder<UrlImportJob> */
+    private function scopedJobs(?ClientProject $project): Builder
+    {
+        return UrlImportJob::query()->when(
+            $project instanceof ClientProject,
+            fn (Builder $query) => $query->where('client_project_id', (int) $project->getKey()),
+            fn (Builder $query) => $query->whereNull('client_project_id'),
         );
+    }
 
-        $output = [];
-        $exitCode = 0;
-        exec($command, $output, $exitCode);
+    private function jobForProject(int $jobId, ?ClientProject $project): UrlImportJob
+    {
+        return $this->scopedJobs($project)->whereKey($jobId)->firstOrFail();
+    }
 
-        return $exitCode === 0;
+    /** @param class-string<KnowledgeBase|KeywordLibrary|TitleLibrary> $modelClass */
+    private function scopedOwnerCount(string $modelClass, ?ClientProject $project): int
+    {
+        return $modelClass::query()->when(
+            $project instanceof ClientProject,
+            fn (Builder $query) => $query->where('client_project_id', (int) $project->getKey()),
+            fn (Builder $query) => $query->whereNull('client_project_id'),
+        )->count();
     }
 
     /**
@@ -257,6 +308,8 @@ class UrlImportController extends Controller
             'id' => (int) $job->id,
             'status' => (string) $job->status,
             'status_label' => __('admin.url_import_history.status.'.$job->status),
+            'commit_status' => (string) ($job->commit_status ?: 'not_started'),
+            'commit_error_code' => $job->commit_error_code,
             'current_step' => $currentStep,
             'stored_step' => $storedStep,
             'progress_percent' => (int) $job->progress_percent,

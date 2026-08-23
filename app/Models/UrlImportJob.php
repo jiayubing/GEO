@@ -3,8 +3,9 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
 
 class UrlImportJob extends Model
 {
@@ -34,7 +35,21 @@ class UrlImportJob extends Model
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
             'client_project_id' => 'integer',
+            'committed_knowledge_base_id' => 'integer',
+            'committed_keyword_library_id' => 'integer',
+            'committed_title_library_id' => 'integer',
+            'commit_started_at' => 'datetime',
+            'commit_finished_at' => 'datetime',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::updating(function (self $job): void {
+            if ($job->isDirty('client_project_id')) {
+                throw new LogicException('url_import_job_project_owner_immutable');
+            }
+        });
     }
 
     public function logs(): HasMany

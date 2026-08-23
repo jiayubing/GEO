@@ -8,6 +8,12 @@ if (! is_file($manualPublicationsPath) && function_exists('lang_path')) {
 
 return array_replace_recursive($base, [
     'manual_publications' => require $manualPublicationsPath,
+    'project_context' => [
+        'label' => 'Projeto',
+        'placeholder' => 'Selecionar projeto',
+        'loading' => 'Carregando projetos…',
+        'switch_error' => 'Não foi possível mudar o projeto. Atualize a página e tente novamente.',
+    ],
     'nav' => [
         'dashboard' => 'Painel',
         'tasks' => 'Tarefas',
@@ -3447,6 +3453,7 @@ return array_replace_recursive($base, [
             'review_status' => 'Status de Revisão',
             'is_hot' => 'Artigo Quente (Hot)',
             'is_featured' => 'Artigo em Destaque',
+            'central_site_allowed' => 'Exibir no Site Central',
             'category' => 'Categoria',
             'author' => 'Autor',
         ],
@@ -3467,6 +3474,7 @@ return array_replace_recursive($base, [
             'recommendation' => 'Apenas artigos publicados são exibidos no frontend. Os artigos em destaque estão limitados aos 5 mais recentes; múltiplos artigos "quentes" alternam no carrossel da página inicial.',
             'is_hot' => 'Exibir este artigo no carrossel quente da página inicial e na lista da barra lateral quente.',
             'is_featured' => 'Exibir este artigo na lista de destaques da página inicial. Se mais de 5 forem selecionados, apenas os 5 mais recentes serão exibidos.',
+            'central_site_allowed' => 'Exige um resultado de publicação local aprovado antes de aparecer no site central.',
         ],
         'button' => [
             'show_preview' => 'Exibir Visualização',
@@ -3502,6 +3510,7 @@ return array_replace_recursive($base, [
             'review_status' => 'Status de Revisão',
             'is_hot' => 'Artigo Quente (Hot)',
             'is_featured' => 'Artigo em Destaque',
+            'central_site_allowed' => 'Exibir no Site Central',
             'category' => 'Categoria',
             'author' => 'Autor',
         ],
@@ -3518,6 +3527,7 @@ return array_replace_recursive($base, [
             'recommendation' => 'Apenas artigos publicados são exibidos no frontend. Os artigos em destaque estão limitados aos 5 mais recentes; múltiplos artigos "quentes" alternam no carrossel da página inicial.',
             'is_hot' => 'Exibir este artigo no carrossel quente da página inicial e na lista da barra lateral quente.',
             'is_featured' => 'Exibir este artigo na lista de destaques da página inicial. Se mais de 5 forem selecionados, apenas os 5 mais recentes serão exibidos.',
+            'central_site_allowed' => 'Exige um resultado de publicação local aprovado antes de aparecer no site central.',
         ],
         'info' => [
             'article_id' => 'ID do Artigo',

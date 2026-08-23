@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
 
 class EnterpriseKnowledgeProject extends Model
 {
@@ -30,6 +31,24 @@ class EnterpriseKnowledgeProject extends Model
             'created_by_admin_id' => 'integer',
             'client_project_id' => 'integer',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $project): void {
+            if ($project->client_project_id === null || $project->published_knowledge_base_id === null) {
+                return;
+            }
+
+            $knowledgeBase = KnowledgeBase::query()
+                ->select(['id', 'client_project_id'])
+                ->find($project->published_knowledge_base_id);
+
+            if ($knowledgeBase !== null
+                && (int) $knowledgeBase->client_project_id !== (int) $project->client_project_id) {
+                throw new LogicException('enterprise_knowledge_published_knowledge_base_project_mismatch');
+            }
+        });
     }
 
     public function sources(): HasMany

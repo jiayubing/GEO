@@ -73,6 +73,7 @@
         'task_name' => (string) ($articleForm['task_name'] ?? ''),
         'is_hot' => old('is_hot', !empty($articleForm['is_hot']) ? '1' : '0'),
         'is_featured' => old('is_featured', !empty($articleForm['is_featured']) ? '1' : '0'),
+        'central_site_allowed' => old('central_site_allowed', !empty($articleForm['central_site_allowed']) ? '1' : '0'),
         'source_title_id' => old('source_title_id', ''),
         'is_ai_generated' => old('is_ai_generated', '0'),
     ];
@@ -591,6 +592,13 @@
                                         <span>
                                             <span class="font-medium text-gray-900">{{ __($i18nRoot.'.field.is_featured') }}</span>
                                             <span class="block text-xs text-gray-500">{{ __($i18nRoot.'.help.is_featured') }}</span>
+                                        </span>
+                                    </label>
+                                    <label class="flex items-start gap-3 text-sm text-gray-700">
+                                        <input type="checkbox" name="central_site_allowed" value="1" @checked((string) $formData['central_site_allowed'] === '1') class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:ring-blue-500">
+                                        <span>
+                                            <span class="font-medium text-gray-900">{{ __($i18nRoot.'.field.central_site_allowed') }}</span>
+                                            <span class="block text-xs text-gray-500">{{ __($i18nRoot.'.help.central_site_allowed') }}</span>
                                         </span>
                                     </label>
                                 </div>

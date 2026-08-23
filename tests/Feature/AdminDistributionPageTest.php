@@ -10,6 +10,9 @@ use App\Models\ArticleDistribution;
 use App\Models\ArticleImage;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\ClientProject;
+use App\Models\ClientProjectDistributionChannel;
 use App\Models\DistributionChannel;
 use App\Models\DistributionChannelSecret;
 use App\Models\DistributionLog;
@@ -28,6 +31,8 @@ use App\Services\GeoFlow\DistributionSigningService;
 use App\Services\GeoFlow\DistributionTargetSitePackageBuilder;
 use App\Services\GeoFlow\FrontendExperienceInspector;
 use App\Services\GeoFlow\ManagedImageFileService;
+use App\Services\GeoFlow\ProjectAccessService;
+use App\Services\GeoFlow\ProjectChannelSiteIdentityService;
 use App\Services\GeoFlow\TaskDistributionChannelSelector;
 use App\Support\GeoFlow\ApiKeyCrypto;
 use App\Support\Site\HomepageModuleBuilder;
@@ -2283,6 +2288,90 @@ class AdminDistributionPageTest extends TestCase
             ->assertDontSee('官网主站');
     }
 
+    public function test_pausing_a_bound_channel_persists_a_disabled_project_site_identity(): void
+    {
+        $project = $this->projectForIdentity('pause-bound-site');
+        $channel = DistributionChannel::query()->create([
+            'name' => '绑定的站点',
+            'domain' => 'pause-bound-site.example.test',
+            'endpoint_url' => 'https://pause-bound-site.example.test',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+            'channel_config' => [
+                'frontend_capabilities_cache' => [
+                    'status' => 'ok',
+                    'reachable' => true,
+                    'supports_project_site_identity' => true,
+                ],
+            ],
+        ]);
+        ClientProjectDistributionChannel::query()->create([
+            'client_project_id' => $project->id,
+            'distribution_channel_id' => $channel->id,
+            'status' => 'active',
+        ]);
+        $identity = app(ProjectChannelSiteIdentityService::class)->provision($project, $channel);
+
+        $this->actingAs($this->admin(), 'admin')
+            ->post(route('admin.distribution.pause', ['channelId' => (int) $channel->id]))
+            ->assertRedirect(route('admin.distribution.show', ['channelId' => (int) $channel->id]));
+
+        $this->assertDatabaseHas('project_channel_site_identities', [
+            'id' => $identity->id,
+            'status' => 'disabled',
+        ]);
+        $this->assertDatabaseHas('project_channel_site_identity_histories', [
+            'project_channel_site_identity_id' => $identity->id,
+            'reason' => 'disabled',
+        ]);
+    }
+
+    public function test_channel_identity_collision_is_a_safe_update_error_and_rolls_back_the_channel(): void
+    {
+        $firstProject = $this->projectForIdentity('identity-conflict-first');
+        $secondProject = $this->projectForIdentity('identity-conflict-second');
+        $first = DistributionChannel::query()->create([
+            'name' => '第一站点',
+            'domain' => 'identity-first.example.test',
+            'endpoint_url' => 'https://identity-first.example.test',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+            'channel_config' => ['frontend_capabilities_cache' => ['supports_project_site_identity' => true]],
+        ]);
+        $second = DistributionChannel::query()->create([
+            'name' => '第二站点',
+            'domain' => 'identity-second.example.test',
+            'endpoint_url' => 'https://identity-second.example.test',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+            'channel_config' => ['frontend_capabilities_cache' => ['supports_project_site_identity' => true]],
+        ]);
+        foreach ([[$firstProject, $first], [$secondProject, $second]] as [$project, $channel]) {
+            ClientProjectDistributionChannel::query()->create([
+                'client_project_id' => $project->id,
+                'distribution_channel_id' => $channel->id,
+                'status' => 'active',
+            ]);
+            app(ProjectChannelSiteIdentityService::class)->provision($project, $channel);
+        }
+
+        $this->actingAs($this->admin(), 'admin')
+            ->from(route('admin.distribution.edit', ['channelId' => (int) $first->id]))
+            ->put(route('admin.distribution.update', ['channelId' => (int) $first->id]), [
+                'name' => '第一站点',
+                'domain' => 'identity-second.example.test',
+                'endpoint_url' => 'https://identity-second.example.test',
+                'status' => 'active',
+            ])
+            ->assertRedirect(route('admin.distribution.edit', ['channelId' => (int) $first->id]))
+            ->assertSessionHasErrors(['distribution' => 'project_site_identity_conflict']);
+
+        $this->assertDatabaseHas('distribution_channels', [
+            'id' => $first->id,
+            'endpoint_url' => 'https://identity-first.example.test',
+        ]);
+    }
+
     public function test_admin_can_activate_paused_distribution_channel(): void
     {
         $channel = DistributionChannel::query()->create([
@@ -3446,6 +3535,10 @@ class AdminDistributionPageTest extends TestCase
     public function test_task_creation_persists_selected_distribution_channels(): void
     {
         $fixtures = $this->taskFixtures();
+        $project = $this->projectForIdentity('task-distribution');
+        $fixtures['title_library']->update(['client_project_id' => $project->id]);
+        $fixtures['category']->update(['client_project_id' => $project->id]);
+        $fixtures['author']->update(['client_project_id' => $project->id]);
         $channelOne = DistributionChannel::query()->create([
             'name' => '官网主站',
             'domain' => 'example.com',
@@ -3460,8 +3553,16 @@ class AdminDistributionPageTest extends TestCase
             'template_key' => 'default',
             'status' => 'active',
         ]);
+        foreach ([$channelOne, $channelTwo] as $channel) {
+            ClientProjectDistributionChannel::query()->create([
+                'client_project_id' => $project->id,
+                'distribution_channel_id' => $channel->id,
+                'status' => 'active',
+            ]);
+        }
 
         $this->actingAs($this->admin(), 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
             ->post(route('admin.tasks.store'), [
                 'task_name' => '分发任务',
                 'title_library_id' => $fixtures['title_library']->id,
@@ -4935,6 +5036,20 @@ MD,
             'display_name' => 'Distribution Admin',
             'role' => 'super_admin',
             'status' => 'active',
+        ]);
+    }
+
+    private function projectForIdentity(string $slug): ClientProject
+    {
+        $client = Client::query()->create([
+            'name' => 'Identity Client '.$slug,
+            'slug' => 'identity-client-'.$slug,
+        ]);
+
+        return ClientProject::query()->create([
+            'client_id' => $client->id,
+            'name' => 'Identity Project '.$slug,
+            'slug' => 'identity-project-'.$slug,
         ]);
     }
 

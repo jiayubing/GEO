@@ -16,6 +16,7 @@ class DistributionHttpClient
         private readonly DistributionSigningService $signingService,
         private readonly SafeOutboundHttpClient $safeHttp,
         private readonly Factory $http,
+        private readonly ProjectChannelSiteIdentityService $siteIdentities,
     ) {}
 
     /**
@@ -156,6 +157,10 @@ class DistributionHttpClient
      */
     public function syncSiteSettings(DistributionChannel $channel): array
     {
+        if ($this->siteIdentities->settingsIdentity($channel) !== null
+            && ! (bool) ($channel->frontendCapabilitiesCache()['supports_project_site_identity'] ?? false)) {
+            throw new ProjectSiteIdentityException('project_site_identity_capability_unavailable');
+        }
         $channel->loadMissing('activeSecret');
         $secret = $channel->activeSecret;
         if (! $secret) {
@@ -192,6 +197,7 @@ class DistributionHttpClient
 
             if (! $fallbackResponse->failed()) {
                 $channel->forceFill(['endpoint_url' => $fallbackBaseUrl])->save();
+                $this->siteIdentities->reconcileChannel($channel);
                 $secret->forceFill(['last_used_at' => now()])->save();
 
                 return $this->decodeJson($fallbackResponse);

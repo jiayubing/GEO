@@ -83,4 +83,9 @@ class ClientProject extends Model
     {
         return $this->hasMany(PublicationBatchItem::class);
     }
+
+    public function channelSiteIdentities(): HasMany
+    {
+        return $this->hasMany(ProjectChannelSiteIdentity::class);
+    }
 }

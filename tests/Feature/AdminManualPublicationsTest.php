@@ -20,7 +20,7 @@ class AdminManualPublicationsTest extends TestCase
 
     public function test_manual_publications_are_grouped_under_content_management_navigation(): void
     {
-        $admin = $this->admin('admin');
+        $admin = $this->admin('super_admin');
 
         $articlesResponse = $this->actingAs($admin, 'admin')
             ->get(route('admin.articles.index'));
@@ -119,11 +119,10 @@ class AdminManualPublicationsTest extends TestCase
                 && $articles->getCollection()->contains('id', $currentArticle->getKey()));
     }
 
-    public function test_standard_admin_only_sees_assigned_work_and_can_complete_it(): void
+    public function test_standard_admin_is_blocked_from_unprojectized_manual_publications(): void
     {
         $superAdmin = $this->admin('super_admin');
         $worker = $this->admin('admin');
-        $otherWorker = $this->admin('admin');
         [$persona, $account] = $this->identity($superAdmin);
         $article = $this->article('approved');
         $service = app(ManualPublicationService::class);
@@ -131,18 +130,12 @@ class AdminManualPublicationsTest extends TestCase
             'article_id' => $article->getKey(),
             'content' => 'Worker visible content',
         ]), $superAdmin);
-        $other = $service->create($this->payload($persona, $account, $otherWorker, [
-            'article_id' => $article->getKey(),
-            'content' => 'Other worker secret content',
-        ]), $superAdmin);
 
         $this->actingAs($worker, 'admin')
             ->get(route('admin.manual-publications.index'))
-            ->assertOk()
-            ->assertSee('Worker visible content')
-            ->assertDontSee('Other worker secret content');
+            ->assertForbidden();
         $this->actingAs($worker, 'admin')
-            ->get(route('admin.manual-publications.show', ['manualPublicationId' => $other->getKey()]))
+            ->get(route('admin.manual-publications.show', ['manualPublicationId' => $assigned->getKey()]))
             ->assertForbidden();
         $this->actingAs($worker, 'admin')
             ->get(route('admin.manual-publications.create'))
@@ -155,25 +148,14 @@ class AdminManualPublicationsTest extends TestCase
             ->assertForbidden();
 
         $this->actingAs($worker, 'admin')->post(route('admin.manual-publications.transition', ['manualPublicationId' => $assigned->getKey()]), [
-            'target_status' => ManualPublication::STATUS_READY,
-            'revision' => 1,
-        ])->assertRedirect();
-        $this->actingAs($worker, 'admin')->post(route('admin.manual-publications.transition', ['manualPublicationId' => $assigned->getKey()]), [
-            'target_status' => ManualPublication::STATUS_IN_PROGRESS,
-            'revision' => 2,
-        ])->assertRedirect();
-        $this->actingAs($worker, 'admin')->post(route('admin.manual-publications.transition', ['manualPublicationId' => $assigned->getKey()]), [
             'target_status' => ManualPublication::STATUS_COMPLETED,
-            'revision' => 3,
+            'revision' => 1,
             'completion_url' => 'https://example.com/posts/worker-result',
-            'result_note' => '执行完成',
-        ])->assertRedirect();
+        ])->assertForbidden();
 
         $assigned->refresh();
-        $this->assertSame(ManualPublication::STATUS_COMPLETED, $assigned->status);
-        $this->assertSame('https://example.com/posts/worker-result', $assigned->completion_url);
-        $this->assertCount(4, $assigned->transitions()->get());
-        $this->assertSame($worker->getKey(), $assigned->transitions()->latest('id')->firstOrFail()->changed_by_admin_id);
+        $this->assertSame(ManualPublication::STATUS_DRAFT, $assigned->status);
+        $this->assertCount(1, $assigned->transitions()->get());
     }
 
     public function test_comment_validation_requires_target_and_rejects_account_persona_mismatch(): void
@@ -253,7 +235,7 @@ class AdminManualPublicationsTest extends TestCase
         $this->assertStringStartsWith('[text:', $details['target_context']);
     }
 
-    public function test_export_is_scoped_to_worker_and_protects_spreadsheet_cells(): void
+    public function test_standard_admin_is_blocked_from_export_and_super_admin_csv_protects_spreadsheet_cells(): void
     {
         $superAdmin = $this->admin('super_admin');
         $worker = $this->admin('admin');
@@ -272,13 +254,13 @@ class AdminManualPublicationsTest extends TestCase
 
         $this->actingAs($worker, 'admin')
             ->get(route('admin.manual-publications.show', ['manualPublicationId' => $visible->getKey()]))
-            ->assertOk()
-            ->assertSee('GEOFlow 专家')
-            ->assertSee('GEOFlow 知乎账号')
-            ->assertDontSee('已更名身份')
-            ->assertDontSee('已更名账号');
+            ->assertForbidden();
 
-        $response = $this->actingAs($worker, 'admin')->get(route('admin.manual-publications.export'));
+        $this->actingAs($worker, 'admin')
+            ->get(route('admin.manual-publications.export'))
+            ->assertForbidden();
+
+        $response = $this->actingAs($superAdmin, 'admin')->get(route('admin.manual-publications.export'));
 
         $response->assertOk()->assertStreamed();
         $csv = $response->streamedContent();
@@ -288,7 +270,7 @@ class AdminManualPublicationsTest extends TestCase
         $this->assertStringContainsString('GEOFlow 知乎账号', $csv);
         $this->assertStringNotContainsString('已更名身份', $csv);
         $this->assertStringNotContainsString('已更名账号', $csv);
-        $this->assertStringNotContainsString('hidden export row', $csv);
+        $this->assertStringContainsString('hidden export row', $csv);
     }
 
     public function test_approved_articles_show_manual_publication_entry_only_to_super_admin(): void
@@ -304,8 +286,7 @@ class AdminManualPublicationsTest extends TestCase
 
         $this->actingAs($worker, 'admin')
             ->get(route('admin.articles.edit', ['articleId' => $article->getKey()]))
-            ->assertOk()
-            ->assertDontSee(route('admin.manual-publications.create', ['article_id' => $article->getKey()]), false);
+            ->assertForbidden();
     }
 
     public function test_only_super_admin_can_reopen_terminal_work_order_and_invalid_jump_is_rejected(): void
@@ -323,7 +304,7 @@ class AdminManualPublicationsTest extends TestCase
             'target_status' => ManualPublication::STATUS_COMPLETED,
             'revision' => 1,
             'completion_url' => 'https://example.com/invalid-jump',
-        ])->assertSessionHasErrors();
+        ])->assertForbidden();
         $this->assertSame(ManualPublication::STATUS_DRAFT, $publication->refresh()->status);
 
         $publication = $service->transition($publication, ManualPublication::STATUS_READY, 1, $superAdmin);

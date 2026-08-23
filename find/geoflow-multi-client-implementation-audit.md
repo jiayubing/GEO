@@ -323,6 +323,13 @@ item : pending → approved → publishing → local_published / remote_synced /
 - 中央站不会显示 private、distribution-only、未允许中央站或未通过 gate 的内容；项目站点和全局 slug 冲突有明确错误。
 - URL import worker/commit 重启后能从 job owner 恢复，日志不泄露密钥和客户正文。
 
+**实施状态（2026-08-23）**
+
+- 5A–5G 的隔离核心回归为 **170 passed / 1,392 assertions**（Docker `geoflow-app` 的 SQLite test DB）；Enterprise、URL Import、central eligibility、identity、owner/schema、legacy backfill、operator 403 与 lock/commit 幂等均在独立执行计划的证据矩阵中闭环。
+- 普通管理员无 selected active project 时继续 403；未项目化的 dashboard、ManualPublication、AI/素材等全局面不会为历史测试重新开放。ManualPublication 的完整 project owner 改造仍是阶段 4 的遗留 owner，不能宣称已交付给 operator。
+- 只读 PostgreSQL ledger 显示 020–070 已应用（020=batch 8，030/040=batch 9，050/060=batch 10，070=batch 11）。本机 Docker Compose 日志进一步确认这些迁移由 `geoflow-entrypoint` 在 `AUTO_MIGRATE=true` 下自动执行；具体人工触发者仍需从 Windows/WSL 的 Compose 启停记录追溯。本轮未执行 PG DDL/DML、migration、identity provision 或运营激活。060 的 legacy central-site 回填已随自动迁移完成；独立 owner backfill 只读 preflight 返回 ready、无异常，未执行 apply。
+- 完整空 SQLite `migrate:fresh`/reset 被 020 前的历史迁移阻断；全历史 suite 还含 177 个旧 authorization fixture/`rsync` 环境失败。它们已记录为流程/既有测试缺口，不能用权限旁路修复。阶段 6 尚未开始。
+
 ### 阶段 6：运营资料导入与规模化运营
 
 **阶段总目标**

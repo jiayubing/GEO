@@ -32,7 +32,7 @@ class CategoryController extends Controller
 
         $articles = Article::query()
             ->with(['category', 'author'])
-            ->published()
+            ->centralSitePublic()
             ->where('category_id', $category->id)
             ->orderByDesc('published_at')
             ->orderByDesc('id')
@@ -50,7 +50,7 @@ class CategoryController extends Controller
         if (Schema::hasColumn('articles', 'is_hot')) {
             $hotArticles = Article::query()
                 ->with(['category', 'author'])
-                ->published()
+                ->centralSitePublic()
                 ->where('category_id', $category->id)
                 ->where('is_hot', true)
                 ->orderByDesc('published_at')

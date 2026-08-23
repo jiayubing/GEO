@@ -3,6 +3,7 @@
 namespace App\Services\GeoFlow;
 
 use App\Enums\PublicationTargetType;
+use App\Exceptions\ProjectSiteIdentityException;
 use App\Models\Article;
 use App\Models\ClientProject;
 use App\Models\ClientProjectDistributionChannel;
@@ -22,6 +23,8 @@ use Illuminate\Support\Carbon;
  */
 final class PublicationBatchTargetResolver
 {
+    public function __construct(private readonly ProjectChannelSiteIdentityService $siteIdentities) {}
+
     /** @param ClientProject|int $project @param Article|int $article @param array<string,mixed>|string $target */
     public function resolve(ClientProject|int $project, Article|int $article, array|string $target, string $action = 'publish'): array
     {
@@ -137,15 +140,23 @@ final class PublicationBatchTargetResolver
             throw new DomainException('publication_channel_not_configured');
         }
         $cap = $channel->frontendCapabilitiesCache();
+        try {
+            $siteIdentity = $this->siteIdentities->publicationScope($project, $channel);
+        } catch (ProjectSiteIdentityException $exception) {
+            throw new DomainException('publication_'.$exception->identityCode);
+        }
+        $targetIdentity = $siteIdentity['canonical_identity'] ?? 'channel:'.$id;
         $configVersion = hash('sha256', json_encode([
             'updated_at' => $channel->updated_at?->toAtomString(), 'channel_type' => $channel->channelType(),
             'capability_version' => $cap['capability_version'] ?? '', 'package_version' => $cap['package_version'] ?? '',
+            'project_site_identity' => $siteIdentity,
         ], JSON_THROW_ON_ERROR));
 
-        return ['channel:'.$id, [
+        return [$targetIdentity, [
             'target_type' => 'channel', 'channel_id' => $id, 'channel_type' => $channel->channelType(),
             'domain' => (string) $channel->domain, 'capability_version' => (string) ($cap['capability_version'] ?? ''),
             'package_version' => (string) ($cap['package_version'] ?? ''), 'configuration_version' => $configVersion,
+            'project_site_identity' => $siteIdentity,
         ]];
     }
 

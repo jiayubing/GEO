@@ -33,8 +33,8 @@
         data-status="{{ $job->status }}"
         data-has-result="{{ $result !== [] ? '1' : '0' }}"
         data-autostart="{{ $job->status === 'queued' ? '1' : '0' }}"
-        data-run-url="{{ \App\Support\AdminWeb::routePath('admin.url-import.run', ['jobId' => $job->id]) }}"
-        data-status-url="{{ \App\Support\AdminWeb::routePath('admin.url-import.status', ['jobId' => $job->id]) }}"
+        data-run-url="{{ \App\Support\AdminWeb::routePath('admin.url-import.run', ['jobId' => $job->id]).($legacyContext ? '?legacy=1' : '') }}"
+        data-status-url="{{ \App\Support\AdminWeb::routePath('admin.url-import.status', ['jobId' => $job->id]).($legacyContext ? '?legacy=1' : '') }}"
         data-ai-config-url="{{ route('admin.ai-models.index') }}"
     >
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -48,7 +48,7 @@
                 </div>
             </div>
             <div class="flex flex-wrap items-center gap-3">
-                <a href="{{ route('admin.url-import.history') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                <a href="{{ route('admin.url-import.history', ['legacy' => $legacyContext ? 1 : null]) }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                     <i data-lucide="history" class="w-4 h-4 mr-2"></i>
                     {{ __('admin.url_import.button.view_history') }}
                 </a>
@@ -187,7 +187,7 @@
                             @endif
                         </div>
                         @if ($job->status === 'completed' && $importStatus !== 'imported')
-                            <form method="POST" action="{{ route('admin.url-import.commit', ['jobId' => $job->id]) }}">
+                            <form method="POST" action="{{ route('admin.url-import.commit', ['jobId' => $job->id, 'legacy' => $legacyContext ? 1 : null]) }}">
                                 @csrf
                                 <button type="submit" class="inline-flex min-h-11 items-center rounded-xl border border-transparent bg-green-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-green-700">
                                     <i data-lucide="database" class="w-4 h-4 mr-2"></i>

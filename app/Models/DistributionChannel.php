@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\GeoFlow\ProjectChannelSiteIdentityService;
 use App\Support\Site\ArticleTextAdPicker;
 use App\Support\Site\HomepageModuleBuilder;
 use App\Support\Site\SiteSettingsBag;
@@ -115,12 +116,17 @@ class DistributionChannel extends Model
      */
     public function targetSiteSettingsPayload(): array
     {
-        return $this->resolvedSiteSettings() + [
+        $identity = app(ProjectChannelSiteIdentityService::class)->settingsIdentity($this);
+
+        return $this->resolvedSiteSettings() + array_filter([
             'active_theme' => (string) ($this->template_key ?? ''),
             'front_mode' => $this->frontMode(),
             'frontend_experience_mode' => $this->frontendExperienceMode(),
             'article_text_ads' => $this->effectiveArticleTextAds(),
-        ];
+            // Only explicitly provisioned project sites receive a scope. The
+            // absence of this key is the existing, unbound channel contract.
+            'project_site_identity' => $identity,
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     public function frontendExperienceMode(): string
@@ -147,6 +153,7 @@ class DistributionChannel extends Model
      *   supports_home_carousel_slides:bool,
      *   supports_article_text_ads:bool,
      *   supports_static_generation:bool,
+     *   supports_project_site_identity:bool,
      *   agent_base_url:string
      * }
      */
@@ -185,6 +192,7 @@ class DistributionChannel extends Model
      *   supports_home_carousel_slides:bool,
      *   supports_article_text_ads:bool,
      *   supports_static_generation:bool,
+     *   supports_project_site_identity:bool,
      *   agent_base_url:string
      * }
      */
@@ -206,6 +214,7 @@ class DistributionChannel extends Model
             'supports_home_carousel_slides' => false,
             'supports_article_text_ads' => false,
             'supports_static_generation' => false,
+            'supports_project_site_identity' => false,
             'agent_base_url' => '',
         ];
 
@@ -241,6 +250,7 @@ class DistributionChannel extends Model
             'supports_home_carousel_slides' => (bool) ($cache['supports_home_carousel_slides'] ?? false),
             'supports_article_text_ads' => (bool) ($cache['supports_article_text_ads'] ?? false),
             'supports_static_generation' => (bool) ($cache['supports_static_generation'] ?? false),
+            'supports_project_site_identity' => (bool) ($cache['supports_project_site_identity'] ?? false),
             'agent_base_url' => trim((string) ($cache['agent_base_url'] ?? '')),
         ];
     }
@@ -777,6 +787,11 @@ class DistributionChannel extends Model
         return $this->belongsToMany(ClientProject::class, 'client_project_distribution_channels')
             ->withPivot(['status', 'created_by_admin_id', 'revoked_at'])
             ->withTimestamps();
+    }
+
+    public function projectSiteIdentity(): HasOne
+    {
+        return $this->hasOne(ProjectChannelSiteIdentity::class, 'distribution_channel_id');
     }
 
     public function articleDistributions(): HasMany

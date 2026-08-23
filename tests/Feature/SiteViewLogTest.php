@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\ClientProject;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
@@ -92,6 +94,19 @@ class SiteViewLogTest extends TestCase
             'status' => 'active',
         ]);
 
+        $client = Client::query()->create([
+            'name' => 'View Log Legacy Client',
+            'slug' => 'view-log-legacy-client',
+            'is_legacy' => true,
+        ]);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->id,
+            'name' => 'View Log Legacy Project',
+            'slug' => 'view-log-legacy-project',
+            'is_legacy' => true,
+            'publication_gate' => 'legacy_auto',
+        ]);
+
         return Article::query()->create([
             'title' => '日志测试文章',
             'slug' => 'log-test-article',
@@ -102,6 +117,8 @@ class SiteViewLogTest extends TestCase
             'status' => 'published',
             'review_status' => 'approved',
             'view_count' => 0,
+            'client_project_id' => $project->id,
+            'central_site_allowed' => true,
             'published_at' => Carbon::parse('2026-05-20 09:00:00'),
         ]);
     }

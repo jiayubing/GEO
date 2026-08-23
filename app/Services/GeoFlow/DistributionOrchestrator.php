@@ -2,13 +2,15 @@
 
 namespace App\Services\GeoFlow;
 
+use App\Enums\PublicationGate;
 use App\Exceptions\ArticleRiskGateException;
 use App\Exceptions\DistributionTaskRevisionMismatch;
-use App\Enums\PublicationGate;
+use App\Exceptions\ProjectSiteIdentityException;
 use App\Exceptions\PublicationGateException;
 use App\Jobs\ProcessArticleDistributionJob;
 use App\Models\Article;
 use App\Models\ArticleDistribution;
+use App\Models\ClientProject;
 use App\Models\DistributionChannel;
 use App\Models\DistributionLog;
 use App\Models\Task;
@@ -24,6 +26,7 @@ class DistributionOrchestrator
         private readonly TaskDistributionChannelSelector $channelSelector,
         private readonly ArticleRiskGate $articleRiskGate,
         private readonly DistributionChannelOperationLeaseService $channelOperationLeaseService,
+        private readonly ProjectChannelSiteIdentityService $siteIdentities,
     ) {}
 
     /**
@@ -264,19 +267,24 @@ class DistributionOrchestrator
     public function process(ArticleDistribution $distribution): bool
     {
         $currentDistribution = ArticleDistribution::query()
-            ->with('article')
+            ->with(['article', 'channel'])
             ->whereKey((int) $distribution->id)
             ->first();
         if (! $currentDistribution || ! $currentDistribution->article) {
             return false;
         }
         $article = $currentDistribution->article;
+        $channel = $currentDistribution->channel;
+        if (! $channel instanceof DistributionChannel) {
+            return false;
+        }
 
-        $payload = (string) $currentDistribution->action === 'delete'
-            ? []
-            : $this->buildVerifiedPayload($article, 'distribution_send');
-        if ((string) $currentDistribution->action === 'update') {
-            $payload['event'] = 'article.update';
+        // Preserve the established queued-state failure contract for risk and
+        // publication gates. The payload is rebuilt under the channel lease
+        // immediately before the remote call so an explicit project-site scope
+        // cannot become stale between this preflight and send.
+        if ((string) $currentDistribution->action !== 'delete') {
+            $this->buildVerifiedPayload($article, 'distribution_send', $channel);
         }
 
         $distribution = $this->claimForProcessing((int) $currentDistribution->id);
@@ -292,7 +300,13 @@ class DistributionOrchestrator
         return $this->channelOperationLeaseService->run(
             $channel,
             'article_'.(string) $distribution->action,
-            function (DistributionChannel $lockedChannel) use ($distribution, $payload, $article): bool {
+            function (DistributionChannel $lockedChannel) use ($distribution, $article): bool {
+                $payload = (string) $distribution->action === 'delete'
+                    ? []
+                    : $this->buildVerifiedPayload($article, 'distribution_send', $lockedChannel);
+                if ((string) $distribution->action === 'update') {
+                    $payload['event'] = 'article.update';
+                }
                 $publisher = $this->publisherManager->forChannel($lockedChannel);
                 $response = match ((string) $distribution->action) {
                     'update' => $publisher->update($distribution, $payload),
@@ -464,7 +478,7 @@ class DistributionOrchestrator
             throw new \RuntimeException('分发记录缺少文章或渠道');
         }
 
-        $payload = $action === 'delete' ? [] : $this->buildVerifiedPayload($article, 'distribution_send');
+        $payload = $action === 'delete' ? [] : $this->buildVerifiedPayload($article, 'distribution_send', $channel);
         if ($action === 'update') {
             $payload['event'] = 'article.update';
         }
@@ -477,7 +491,11 @@ class DistributionOrchestrator
         $this->channelOperationLeaseService->run(
             $channel,
             'article_'.$action,
-            function (DistributionChannel $lockedChannel) use ($distribution, $action, $payload, $article): void {
+            function (DistributionChannel $lockedChannel) use ($distribution, $action, $article): void {
+                $payload = $action === 'delete' ? [] : $this->buildVerifiedPayload($article, 'distribution_send', $lockedChannel);
+                if ($action === 'update') {
+                    $payload['event'] = 'article.update';
+                }
                 $publisher = $this->publisherManager->forChannel($lockedChannel);
                 $response = $action === 'delete'
                     ? $publisher->delete($distribution)
@@ -552,7 +570,7 @@ class DistributionOrchestrator
      *
      * @return array<string, mixed>
      */
-    private function buildVerifiedPayload(Article $article, string $trigger): array
+    private function buildVerifiedPayload(Article $article, string $trigger, ?DistributionChannel $channel = null): array
     {
         $result = DB::transaction(function () use ($article, $trigger): Article|ArticleRiskGateException {
             $lockedArticle = Article::query()
@@ -591,7 +609,24 @@ class DistributionOrchestrator
             throw $result;
         }
 
-        return $this->payloadBuilder->build($result);
+        $projectSiteIdentity = null;
+        if ($channel instanceof DistributionChannel) {
+            $projectId = (int) ($result->client_project_id ?? 0);
+            if ($projectId <= 0 && $this->siteIdentities->settingsIdentity($channel) !== null) {
+                throw new ProjectSiteIdentityException('project_site_identity_project_mismatch');
+            }
+            if ($projectId > 0) {
+                $project = $result->clientProject instanceof ClientProject
+                    ? $result->clientProject
+                    : ClientProject::query()->find($projectId);
+                if (! $project instanceof ClientProject) {
+                    throw new ProjectSiteIdentityException('project_site_identity_project_mismatch');
+                }
+                $projectSiteIdentity = $this->siteIdentities->publicationScope($project, $channel);
+            }
+        }
+
+        return $this->payloadBuilder->build($result, $projectSiteIdentity);
     }
 
     private function isDistributableSnapshot(Article $article): bool

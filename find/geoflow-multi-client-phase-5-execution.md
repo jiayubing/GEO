@@ -6,7 +6,7 @@
 >
 > 执行模式：GEOFlow `development` / Enterprise Knowledge、URL Import、公开前台查询和项目站点身份合同
 >
-> 当前状态：工作包拆分完成，尚未开始阶段 5 生产代码实施。
+> 当前状态：5A–5G 代码与隔离验证已收敛；未执行生产 PostgreSQL 迁移、identity provision 或运营激活，且未开始阶段 6。
 
 ## 1. 阶段目标
 
@@ -219,3 +219,81 @@
 
 本助手按 `5A → 5B`、`5C → 5D` 两条后台线路推进，再执行 `5E → 5F → 5G`。每个工作包开始前先核对阶段 1–4 的实际 owner、迁移和 gate/batch 合同，重新发现真实 admin/API/CLI/worker/公开路线；完成后先运行该包最小验证，再更新本文件和总计划。若运行环境缺少 PHP CLI 或 discovery/preflight 依赖，只记录静态证据和未验证层，不把文档检查描述为运行时成功。
 
+## 6. 5G 闭环记录（2026-08-23）
+
+### 6.1 Requirement–evidence matrix
+
+| 包 | 单一事实 owner / 授权合同 | 主要证据 |
+| --- | --- | --- |
+| 5A | `EnterpriseKnowledgeProject.client_project_id` 是 Enterprise 的 owner；source/revision 经项目追溯，published KnowledgeBase 必须同 owner。020 以复合关系与索引收紧。 | `ClientProjectDomainSchemaTest` 的 owner、跨项目 KB 与索引断言；`EnterpriseKnowledgeProjectIsolationTest` 的跨项目、active/inactive、delete 断言。 |
+| 5B | Enterprise controller 从选定项目取 scope；job payload 只有稳定 project/admin ID，执行和写入时重读 active owner；revision 以 content hash 幂等。 | Enterprise 创建/restore/autosave/publish/retry 测试；锁竞争现在抛稳定 `enterprise_knowledge_draft_lock_unavailable` 进入 3 次、5/15 秒退避，而非被确认成功。 |
+| 5C | `UrlImportJob.client_project_id` 在创建时由 server-side context 固定；web/CLI 均按 owner scope，legacy null owner 仅明确 `--legacy` super-admin 兼容。 | `UrlImportProjectIsolationTest` 的 A/B、viewer/stale context、CLI exit、legacy、索引与 log redaction 断言。CLI help 确认必须给 `<jobId>` 和 `--project` 或 `--legacy`，`--recover-stale` 为显式恢复。 |
+| 5D | worker/commit 从持久 job 重新读取 owner；commit lock/transaction 和 commit state 是唯一 writer，资产继承 job project。 | URL 测试覆盖重复/并发 commit、tampered preview、uncertain、inactive owner、stale-only recovery 和 restart；无 request project ID/payload fallback。 |
+| 5E | `CentralSiteArticleQuery` 是中央站公开读取 owner；数据库条件包含 published、review、`central_site_allowed`、active project、legacy/平台 gate 与 local batch 成功结果。 | Home/archive/category/article/layout composer 都调用 `centralSitePublic()`；`CentralSiteEligibilityTest` 与 `CentralSiteMigrationTest` 覆盖撤回、项目停用、private、legacy/new、索引和 backfill。没有 sitemap/robots route，未宣称该能力。 |
+| 5F | `ProjectChannelSiteIdentityService` 拥有 canonical identity、历史保留、唯一性、channel membership/capability 与 disabled 语义；发送 payload 从持久 identity 解析。 | `ProjectChannelSiteIdentityTest` 覆盖冲突、跨项目、disabled/404、package/canonical；070 SQLite DDL round-trip。后台 endpoint 冲突现在回退为安全 field error，pause 会持久 disable identity/history。 |
+| 5G | `EnsureProjectScopedSurface` 是 operator 后台入口闸门；未完成项目化的面不开放给 operator，不用 UI 或内存过滤替代。 | `ProjectScopedArticleSurfaceTest`、Manual/Sensitive route 回归与静态 route/controller 扫描。普通管理员无 selected active project 得 403；super_admin 保留受审计的 legacy/global 管理面。 |
+
+### 6.2 运行与测试证据
+
+- Docker runtime：`geoflow-app` 中 PHP 8.4.24、Laravel 12.64.0；`phpunit.xml` 明确使用 `DB_CONNECTION=sqlite`、`DB_DATABASE=:memory:`。本阶段测试没有迁移或写入现有 PostgreSQL。
+- 最终有界核心命令：
+
+  ```text
+  docker exec geoflow-app php artisan test --compact \
+    tests/Feature/ProjectScopedArticleSurfaceTest.php \
+    tests/Feature/AdminManualPublicationsTest.php \
+    tests/Feature/SensitiveAdminRouteAuthorizationTest.php \
+    tests/Feature/AdminDistributionPageTest.php \
+    tests/Feature/EnterpriseKnowledgeProjectIsolationTest.php \
+    tests/Feature/UrlImportProjectIsolationTest.php \
+    tests/Feature/CentralSiteEligibilityTest.php \
+    tests/Feature/ProjectChannelSiteIdentityTest.php \
+    tests/Feature/ArticleWorkflowTransitionServiceTest.php \
+    tests/Feature/WorkerArticleRiskWorkflowTest.php \
+    tests/Unit/AdminPtBrLocaleCoverageTest.php \
+    tests/Unit/CentralSiteMigrationTest.php \
+    tests/Unit/ProjectChannelSiteIdentityMigrationTest.php \
+    tests/Unit/ClientProjectDomainSchemaTest.php \
+    tests/Unit/PublicationGateContractTest.php
+  ```
+
+  结果：**170 passed / 1,392 assertions / 30.27s**。此前针对权限、manual、distribution、Enterprise lock 与 identity 的直接回归也为 **127 passed / 1,069 assertions**。
+
+- 全套 SQLite suite 曾在修复前运行一次：**1,272 passed / 177 failed / 1 skipped / 10,151 assertions / 227.80s**。其失败分类为：
+  - `EXPOSED_PREEXISTING`：旧 AI model、素材、site settings、legacy task 测试将普通 `admin` 当作可访问全局后台；当前合同故意返回 403，不能为绿灯重新暴露全局数据。
+  - `PROCESS_EVIDENCE_GAP`：`OpenSourceReleaseScriptsTest` 需要容器没有的 `rsync`。
+  - 已修复的当前测试合同：pt_BR 缺 `project_context` 四个 key；旧工作流 fixture 未显式设置 `central_site_allowed`。这两个集合已纳入上述最终 170 条定向回归。
+
+### 6.3 Migration、legacy 与 PostgreSQL 边界
+
+- `CentralSiteMigrationTest` 验证 050 的 SQLite down/up 和 index；060 只基于已确认 legacy project + `legacy_auto` 回填，不把新项目文章设为公开。`ProjectChannelSiteIdentityMigrationTest` 验证 070 的 SQLite create/down/create/down；domain/Enterprise contract 在 `ClientProjectDomainSchemaTest` 覆盖。
+- 另建容器内 `/tmp/geoflow-phase5.sqlite` 执行完整 `migrate:fresh`/`migrate:reset`。它在 **020 之前** 的 `2026_07_15_000000_add_risk_metadata_to_sensitive_words_table` SQLite DDL 失败；reset 又在更早的 `2026_05_21_010000_align_view_logs_table` down 失败。因此不能把完整空 SQLite fresh/rollback 宣称为通过，且未修改这些阶段外迁移。
+- 对现有 PostgreSQL 仅执行 `BEGIN READ ONLY; SELECT migration,batch FROM migrations ...; ROLLBACK;`：ledger 显示 020=batch 8、030/040=batch 9、050/060=batch 10、070=batch 11。随后在本机 Docker Compose 证据中确认：`geoflow-entrypoint` 的 `AUTO_MIGRATE=true`/`init` 自动入口分别记录了 020、030/040、050/060、070 的 `DONE`；因此可确认执行进程是本机容器入口，无法仅凭 Docker 日志还原具体人工触发者。060 的 legacy central-site DML 也由同一自动迁移入口执行；独立 `geoflow:client-project-backfill-legacy` 只读 preflight 返回 `status=ready`、`anomalies=[]`、无 legacy project id，未执行 `--apply`。**本线程没有做 PG DDL/DML/migrate**。070 schema 已在 ledger，未执行 identity provision 或运营激活。
+
+### 6.4 静态/运行时旁路扫描
+
+- `route:list --json` 与 route source 显示 Enterprise、URL Import 走 `EnsureProjectScopedSurface`；CLI `geoflow:process-url-import` 没有 context-free job run。现有 `/api/v1` 是内部 admin API token + scope，不新增客户 API。
+- 扫描未发现客户 login、customer token、客户 upload 或客户直连 API；公开现有路由为首页、about、archive、category、article、lead form，中央文章读取点均走 query scope，不存在 PHP collection/filter 的公开兜底。
+- `UrlImportJobLog` 写入时删除 URL query；Enterprise job 只记录 exception class/project IDs，不写正文、token 或 secret。Enterprise isolation 测试验证 queue serialization 不含 source secret/`client_project_id`；URL isolation 测试验证 log query redaction。
+- PG 的只读 `geoflow:project-site-identity-report --json` 返回 channels/bound/conflicts 均为 0；这只是当前 DB preflight，不代表已 provision 项目站点。
+
+### 6.5 Primary review、修复与 bounded re-review
+
+| 分类 | finding 与处置 | 结果 |
+| --- | --- | --- |
+| `INTRODUCED_BY_CHANGE` P1 | contextless `legacySurface` 让普通管理员在没有项目时读取 article；移除该例外。 | 已修复并由 project scoped 回归覆盖。 |
+| `INTRODUCED_BY_CHANGE` P2 | channel identity canonical 冲突从后台更新路径冒泡为 500。 | 捕获为稳定安全 error，事务回滚；controller 回归通过。 |
+| `INTRODUCED_BY_CHANGE` P2 | Enterprise execution cache lock 取不到时 job 被当作成功。 | 明确抛出、3 tries/backoff，并覆盖锁竞争。 |
+| `CROSS_COMPONENT_INTERACTION` P2 | pause channel 未收敛持久 identity。 | pause 同事务调用 reconcile，identity/history disabled 回归通过。 |
+| `EXPOSED_PREEXISTING` P1 | `ManualPublication` service/controller 尚未真正 projectized，含全局查询。 | normal admin 继续 403，不开放全局数据；后续 owner 为阶段 4 manual-publication projectization，不能把它记作 operator 功能已完成。 |
+| `PROCESS_EVIDENCE_GAP` | 全库 fresh SQLite 与 reset 在早期无关 migration 失败；全套 suite 亦有旧 authorization fixture 与缺 `rsync`。 | 如实记录，未以变更权限或修无关 schema 换取绿灯。 |
+| `EXPOSED_PREEXISTING` P3 | identity service 的 project/channel 锁序不一致，且 model service locator 在批量调用时有 N+1 风险。 | 当前没有 production provision entry；记录给后续 identity 接入 owner，未扩大本阶段。 |
+
+有界复审只重查以上修复、它们的直接调用方、owner/transaction/public eligibility 不变量和核心测试；未重新开启无限 fresh review。`git diff --check` 通过，PHP 改动已运行 `vendor/bin/pint --dirty --format agent`。
+
+### 6.6 人工操作与未验证层
+
+1. 已从本机 Docker 日志确认 020–070 是 `geoflow-entrypoint` 在 `AUTO_MIGRATE=true` 下自动执行；若需要责任追踪，仍需从 Windows/WSL 的 Compose 启停记录确认是谁触发了容器重建。不得重跑已在 ledger 的 migration。060 的 legacy 回填已由迁移执行；独立 owner backfill 当前只读 preflight 无异常，未执行 `--apply`。
+2. 在受控非生产 PG 克隆上执行完整 migration preflight/rollback，再由负责人执行 production 变更；本线程没有这一授权。
+3. 若要启用项目站点，先运行只读 `geoflow:project-site-identity-report --json`，人工解决 canonical 冲突，再通过受控 provision 激活；当前 DB 没有已 provision identity。
+4. 为使整个历史 suite 收敛，分别把未项目化后台的旧 operator fixture 改为 super_admin 或真实 project scope；安装/提供 `rsync` 后复跑 release-script test。不得为了这些旧测试放宽 403。

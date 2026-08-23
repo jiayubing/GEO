@@ -27,13 +27,13 @@ final class SiteLayoutComposer
         if (Schema::hasTable('categories')) {
             $categories = Category::query()
                 ->whereHas('articles', function ($q): void {
-                    $q->published();
+                    $q->centralSitePublic();
                 })
                 ->orderBy('sort_order')
                 ->orderBy('id')
                 ->withCount([
                     'articles as published_count' => function ($q): void {
-                        $q->published();
+                        $q->centralSitePublic();
                     },
                 ])
                 ->get();

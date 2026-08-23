@@ -6,17 +6,21 @@ use App\Enums\ClientProjectMemberRole;
 use App\Enums\ClientProjectMemberStatus;
 use App\Enums\ClientProjectStatus;
 use App\Enums\ClientStatus;
+use App\Enums\PublicationGate;
 use App\Models\Admin;
+use App\Models\Category;
 use App\Models\Client;
 use App\Models\ClientProject;
-use App\Models\ClientProjectMember;
 use App\Models\ClientProjectDistributionChannel;
+use App\Models\ClientProjectMember;
 use App\Models\DistributionChannel;
-use App\Models\Category;
+use App\Models\EnterpriseKnowledgeProject;
+use App\Models\KnowledgeBase;
 use App\Services\GeoFlow\LegacyProjectBackfillService;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Database\QueryException;
+use LogicException;
 use Tests\TestCase;
 
 class ClientProjectDomainSchemaTest extends TestCase
@@ -42,7 +46,7 @@ class ClientProjectDomainSchemaTest extends TestCase
 
         $this->assertSame(ClientStatus::ACTIVE, $client->fresh()->status);
         $this->assertSame(ClientProjectStatus::ACTIVE, $project->fresh()->status);
-        $this->assertSame(\App\Enums\PublicationGate::PLATFORM_APPROVAL, $project->fresh()->publication_gate);
+        $this->assertSame(PublicationGate::PLATFORM_APPROVAL, $project->fresh()->publication_gate);
         $this->assertSame(ClientProjectMemberRole::OPERATOR, $member->fresh()->role);
         $this->assertSame(ClientProjectMemberStatus::ACTIVE, $member->fresh()->status);
         $this->assertTrue($member->project->is($project));
@@ -104,7 +108,35 @@ class ClientProjectDomainSchemaTest extends TestCase
         $this->assertSame(1, Client::query()->where('is_legacy', true)->count());
         $this->assertSame(1, ClientProject::query()->where('is_legacy', true)->count());
         $this->assertSame(0, $second['owner_counts_assigned']['categories']);
-        $this->assertSame(\App\Enums\PublicationGate::LEGACY_AUTO, ClientProject::query()->where('is_legacy', true)->firstOrFail()->publication_gate);
+        $this->assertSame(PublicationGate::LEGACY_AUTO, ClientProject::query()->where('is_legacy', true)->firstOrFail()->publication_gate);
+    }
+
+    public function test_enterprise_published_knowledge_base_cannot_cross_project_owner(): void
+    {
+        $client = Client::create(['name' => 'Acme', 'slug' => 'acme']);
+        $projectA = ClientProject::create(['client_id' => $client->id, 'name' => 'A', 'slug' => 'a']);
+        $projectB = ClientProject::create(['client_id' => $client->id, 'name' => 'B', 'slug' => 'b']);
+        $knowledgeBase = KnowledgeBase::create([
+            'name' => 'Owned by B',
+            'content' => 'content',
+            'client_project_id' => $projectB->id,
+        ]);
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('enterprise_knowledge_published_knowledge_base_project_mismatch');
+        EnterpriseKnowledgeProject::create([
+            'name' => 'A knowledge',
+            'client_project_id' => $projectA->id,
+            'published_knowledge_base_id' => $knowledgeBase->id,
+        ]);
+    }
+
+    public function test_enterprise_ownership_contract_indexes_are_present(): void
+    {
+        $this->assertTrue(Schema::hasColumn('enterprise_knowledge_projects', 'client_project_id'));
+        $this->assertTrue(Schema::hasColumn('knowledge_bases', 'client_project_id'));
+        $indexes = collect(Schema::getIndexes('knowledge_bases'))->pluck('name')->all();
+        $this->assertContains('knowledge_bases_id_project_unique', $indexes);
     }
 
     private function createAdmin(): Admin

@@ -43,7 +43,7 @@ final class PublicationBatchLocalItemExecutor
             }
             try {
                 $this->targets->assertFresh($locked);
-                $gate = PublicationGateContract::evaluate($project, (string) $article->status, (string) $article->review_status, PublicationGateContract::TARGET_LOCAL, true);
+                $gate = PublicationGateContract::evaluate($project, (string) $article->status, (string) $article->review_status, PublicationGateContract::TARGET_LOCAL, true, (bool) $article->central_site_allowed);
                 if (! $gate['allowed']) {
                     throw new DomainException('publication_gate_'.$gate['code']);
                 }

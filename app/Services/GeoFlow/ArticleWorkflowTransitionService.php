@@ -64,6 +64,7 @@ class ArticleWorkflowTransitionService
                         (string) ($workflowState['review_status'] ?? 'pending'),
                         $publicationTarget,
                         $platformApproved,
+                        (bool) $lockedArticle->central_site_allowed,
                     );
                     if (! $gate['allowed']) {
                         throw new PublicationGateException($gate['code'], $publicationTarget, $gate['gate']);

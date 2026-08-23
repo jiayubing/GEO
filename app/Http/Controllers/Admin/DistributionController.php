@@ -2,8 +2,9 @@
 
 namespace App\Http\Controllers\Admin;
 
-use App\Exceptions\DistributionChannelDeletionBlocked;
 use App\Enums\PublicationGate;
+use App\Exceptions\DistributionChannelDeletionBlocked;
+use App\Exceptions\ProjectSiteIdentityException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\DeleteDistributionChannelRequest;
 use App\Jobs\ProcessArticleDistributionJob;
@@ -21,6 +22,7 @@ use App\Services\GeoFlow\DistributionOrchestrator;
 use App\Services\GeoFlow\DistributionPublisherManager;
 use App\Services\GeoFlow\DistributionTargetSitePackageBuilder;
 use App\Services\GeoFlow\FrontendExperienceInspector;
+use App\Services\GeoFlow\ProjectChannelSiteIdentityService;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\ApiKeyCrypto;
 use App\Support\Site\ArticleTextAdPicker;
@@ -50,6 +52,7 @@ class DistributionController extends Controller
         private readonly FrontendExperienceInspector $frontendExperienceInspector,
         private readonly DistributionChannelDeletionService $channelDeletionService,
         private readonly DistributionChannelOperationLeaseService $channelOperationLeaseService,
+        private readonly ProjectChannelSiteIdentityService $siteIdentities,
     ) {}
 
     public function index(Request $request): View
@@ -252,6 +255,11 @@ class DistributionController extends Controller
                     'description' => filled($payload['description'] ?? null) ? (string) $payload['description'] : null,
                 ])->save();
 
+                // This is the one existing platform-channel mutation path. If
+                // it owns a project public-site identity, retain its old URL as
+                // history or reject a collision before committing the edit.
+                $this->siteIdentities->reconcileChannel($lockedChannel);
+
                 if ($lockedChannel->isWordPressRest() && filled($payload['wordpress_application_password'] ?? null)) {
                     DistributionChannelSecret::query()
                         ->where('distribution_channel_id', (int) $lockedChannel->id)
@@ -283,6 +291,8 @@ class DistributionController extends Controller
             return redirect()
                 ->route('admin.distribution.delete', ['channelId' => $channelId])
                 ->withErrors(__('admin.distribution.delete.operation_blocked'));
+        } catch (ProjectSiteIdentityException $exception) {
+            return back()->withErrors(['distribution' => $exception->identityCode]);
         }
 
         if (! $channel) {
@@ -1904,19 +1914,25 @@ class DistributionController extends Controller
 
     private function setStatus(int $channelId, string $status, string $message): RedirectResponse
     {
-        $channel = DB::transaction(function () use ($channelId, $status): ?DistributionChannel {
-            $channel = DistributionChannel::query()
-                ->whereKey($channelId)
-                ->lockForUpdate()
-                ->first();
-            if (! $channel || (string) $channel->status === DistributionChannel::STATUS_DELETING) {
+        try {
+            $channel = DB::transaction(function () use ($channelId, $status): ?DistributionChannel {
+                $channel = DistributionChannel::query()
+                    ->whereKey($channelId)
+                    ->lockForUpdate()
+                    ->first();
+                if (! $channel || (string) $channel->status === DistributionChannel::STATUS_DELETING) {
+                    return $channel;
+                }
+
+                $channel->forceFill(['status' => $status])->save();
+                $this->siteIdentities->reconcileChannel($channel);
+
                 return $channel;
-            }
+            }, 3);
+        } catch (ProjectSiteIdentityException $exception) {
+            return back()->withErrors(['distribution' => $exception->identityCode]);
+        }
 
-            $channel->forceFill(['status' => $status])->save();
-
-            return $channel;
-        });
         if (! $channel) {
             return redirect()->route('admin.distribution.index')->withErrors(__('admin.distribution.message.not_found'));
         }

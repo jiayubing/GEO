@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\ClientProject;
 use App\Models\LeadForm;
 use App\Models\SiteSetting;
 use App\Support\Site\SiteSettingsBag;
@@ -399,6 +401,18 @@ class EnterpriseSignatureThemeTest extends TestCase
         $author = Author::query()->create([
             'name' => 'GEOFlow Research',
         ]);
+        $client = Client::query()->create([
+            'name' => 'Enterprise Theme Legacy',
+            'slug' => 'enterprise-theme-legacy',
+            'is_legacy' => true,
+        ]);
+        $project = ClientProject::query()->create([
+            'client_id' => $client->id,
+            'name' => 'Enterprise Theme Legacy',
+            'slug' => 'enterprise-theme-legacy',
+            'is_legacy' => true,
+            'publication_gate' => 'legacy_auto',
+        ]);
 
         return Article::query()->create([
             'title' => 'Enterprise GEO Evidence System',
@@ -413,6 +427,8 @@ class EnterpriseSignatureThemeTest extends TestCase
             'is_ai_generated' => 1,
             'is_hot' => true,
             'is_featured' => true,
+            'client_project_id' => $project->id,
+            'central_site_allowed' => true,
             'published_at' => now(),
         ]);
     }

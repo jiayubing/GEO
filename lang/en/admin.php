@@ -4744,6 +4744,7 @@ return [
             'review_status' => 'Review Status',
             'is_hot' => 'Hot Article',
             'is_featured' => 'Featured Article',
+            'central_site_allowed' => 'Show on Central Site',
             'category' => 'Category',
             'author' => 'Author',
         ],
@@ -4764,6 +4765,7 @@ return [
             'recommendation' => 'Only published articles are shown on the frontend. Featured articles are limited to the latest 5; multiple hot articles rotate in the homepage hot area.',
             'is_hot' => 'Show this article in the homepage hot carousel and hot sidebar list.',
             'is_featured' => 'Show this article in the homepage featured list. If more than 5 are selected, the latest 5 are shown.',
+            'central_site_allowed' => 'Requires an approved local publication result before this article can appear on the central site.',
         ],
         'button' => [
             'show_preview' => 'Show Preview',
@@ -4799,6 +4801,7 @@ return [
             'review_status' => 'Review Status',
             'is_hot' => 'Hot Article',
             'is_featured' => 'Featured Article',
+            'central_site_allowed' => 'Show on Central Site',
             'category' => 'Category',
             'author' => 'Author',
         ],
@@ -4815,6 +4818,7 @@ return [
             'recommendation' => 'Only published articles are shown on the frontend. Featured articles are limited to the latest 5; multiple hot articles rotate in the homepage hot area.',
             'is_hot' => 'Show this article in the homepage hot carousel and hot sidebar list.',
             'is_featured' => 'Show this article in the homepage featured list. If more than 5 are selected, the latest 5 are shown.',
+            'central_site_allowed' => 'Requires an approved local publication result before this article can appear on the central site.',
         ],
         'info' => [
             'article_id' => 'Article ID',
