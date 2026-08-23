@@ -254,7 +254,11 @@ final class UrlImportProcessingService
             }
         } catch (Throwable $exception) {
             $code = $this->safeErrorCode($exception, 'url_import_commit_failed');
-            $this->markCommitFailed($jobId, $code);
+            if ($code === 'url_import_commit_uncertain') {
+                $this->markCommitUncertain($jobId);
+            } else {
+                $this->markCommitFailed($jobId, $code);
+            }
 
             throw new \DomainException($code, 0, $exception);
         }
@@ -1298,6 +1302,18 @@ PROMPT;
         if ($commitStatus === 'uncertain') {
             throw new \DomainException('url_import_commit_uncertain');
         }
+        // A process restart can leave the durable marker at `committing` after
+        // artifacts were created but before the job was finalized.  The
+        // transaction outcome is then not safely knowable; never re-run the
+        // side-effecting create sequence and duplicate materials.
+        if ($commitStatus === 'committing') {
+            $job->forceFill([
+                'commit_status' => 'uncertain',
+                'commit_error_code' => 'url_import_commit_uncertain',
+            ])->save();
+
+            throw new \DomainException('url_import_commit_uncertain');
+        }
         if ((string) $job->status !== 'completed') {
             throw new \DomainException('url_import_commit_before_preview');
         }
@@ -1493,6 +1509,22 @@ PROMPT;
                 'commit_status' => 'failed',
                 'commit_finished_at' => now(),
                 'commit_error_code' => $errorCode,
+            ])->save();
+        }, 3);
+    }
+
+    private function markCommitUncertain(int $jobId): void
+    {
+        DB::transaction(function () use ($jobId): void {
+            $job = UrlImportJob::query()->lockForUpdate()->find($jobId);
+            if ($job === null || (string) $job->commit_status === 'imported') {
+                return;
+            }
+
+            $job->forceFill([
+                'commit_status' => 'uncertain',
+                'commit_finished_at' => now(),
+                'commit_error_code' => 'url_import_commit_uncertain',
             ])->save();
         }, 3);
     }

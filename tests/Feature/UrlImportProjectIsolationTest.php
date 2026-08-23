@@ -130,6 +130,16 @@ class UrlImportProjectIsolationTest extends TestCase
             ->assertJsonPath('id', (int) $visible->id);
     }
 
+    public function test_operator_can_open_url_import_index_in_an_explicit_project_context(): void
+    {
+        [$operator, $project] = $this->memberWithProject('index-access', ClientProjectMemberRole::OPERATOR);
+
+        $this->actingAs($operator, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->get(route('admin.url-import'))
+            ->assertOk();
+    }
+
     public function test_viewers_and_stale_project_contexts_are_rejected_before_url_import_mutation(): void
     {
         [$viewer, $project] = $this->memberWithProject('viewer', ClientProjectMemberRole::VIEWER);
@@ -330,6 +340,29 @@ class UrlImportProjectIsolationTest extends TestCase
         $this->assertSame(1, KnowledgeBase::query()->count());
         $this->assertSame(1, KeywordLibrary::query()->count());
         $this->assertSame(1, TitleLibrary::query()->count());
+    }
+
+    public function test_interrupted_committing_job_is_uncertain_and_never_recreates_assets_on_retry(): void
+    {
+        $project = $this->project('commit-restart');
+        $job = $this->previewJob($project, 'https://commit-restart.test/report');
+        $job->forceFill([
+            'commit_status' => 'committing',
+            'commit_started_at' => now()->subMinutes(5),
+        ])->save();
+
+        try {
+            app(UrlImportProcessingService::class)->commit($job->fresh());
+            $this->fail('An interrupted commit must require manual investigation.');
+        } catch (\DomainException $exception) {
+            $this->assertSame('url_import_commit_uncertain', $exception->getMessage());
+        }
+
+        $this->assertSame('uncertain', (string) $job->fresh()->commit_status);
+        $this->assertSame('url_import_commit_uncertain', (string) $job->fresh()->commit_error_code);
+        $this->assertSame(0, KnowledgeBase::query()->count());
+        $this->assertSame(0, KeywordLibrary::query()->count());
+        $this->assertSame(0, TitleLibrary::query()->count());
     }
 
     public function test_worker_refuses_an_inactive_owner_and_only_recovers_running_jobs_after_an_explicit_stale_check(): void

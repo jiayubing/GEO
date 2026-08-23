@@ -139,7 +139,12 @@ class UrlImportController extends Controller
         try {
             $summary = $this->urlImportProcessingService->commit($job);
         } catch (\Throwable $exception) {
-            return back()->withErrors(__('admin.url_import.error.commit_failed').': '.$exception->getMessage());
+            $message = trim($exception->getMessage());
+            $errorCode = preg_match('/^url_import_[a-z0-9_]+$/', $message) === 1
+                ? $message
+                : 'url_import_commit_failed';
+
+            return back()->withErrors(__('admin.url_import.error.commit_failed').': '.$errorCode);
         }
 
         return redirect()

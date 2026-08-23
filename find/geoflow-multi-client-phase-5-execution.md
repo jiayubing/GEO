@@ -297,3 +297,10 @@
 2. 在受控非生产 PG 克隆上执行完整 migration preflight/rollback，再由负责人执行 production 变更；本线程没有这一授权。
 3. 若要启用项目站点，先运行只读 `geoflow:project-site-identity-report --json`，人工解决 canonical 冲突，再通过受控 provision 激活；当前 DB 没有已 provision identity。
 4. 为使整个历史 suite 收敛，分别把未项目化后台的旧 operator fixture 改为 super_admin 或真实 project scope；安装/提供 `rsync` 后复跑 release-script test。不得为了这些旧测试放宽 403。
+
+### 6.7 本次串行执行补充记录（2026-08-23）
+
+- 5C 发现并修复 `EnsureProjectScopedSurface` 未匹配精确路由 `admin.url-import` 的权限缺口；普通 operator 在显式项目上下文可打开 URL Import index。`UrlImportController::commit` 仅返回稳定 `url_import_*` 错误码，避免回显异常正文。新增回归测试。
+- 5D 增加 commit 重启保护：持久 `commit_status=committing` 无法确认副作用结果时转为 `uncertain`，禁止重复创建资料；新增中断恢复回归测试。
+- Docker 定向验证：`UrlImportProcessingServiceTest` + `UrlImportProjectIsolationTest` 为 23 passed / 96 assertions；中央站资格、identity 与迁移测试为 10 passed / 102 assertions；5G 有界核心回归为 170 passed / 1,323 assertions。`git diff --check` 与 Pint 通过。
+- 宿主 Windows 仍无 PHP CLI，验证依赖 Docker `geoflow-app`；未执行生产 PostgreSQL DDL/DML、legacy `--apply`、identity provision、真实外部 URL 抓取或远程发布。上述操作需要负责人明确批准并在受控环境执行。

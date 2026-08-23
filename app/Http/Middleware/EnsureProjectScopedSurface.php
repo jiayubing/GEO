@@ -29,6 +29,7 @@ final class EnsureProjectScopedSurface
                 || $request->routeIs('admin.tasks.*')
                 || $request->routeIs('admin.publication-batches.*')
                 || $request->routeIs('admin.enterprise-knowledge.*')
+                || $request->routeIs('admin.url-import')
                 || $request->routeIs('admin.url-import.*');
             if (! $projectSurface || $project === null) {
                 abort(403, 'project_scoped_surface_unavailable');
