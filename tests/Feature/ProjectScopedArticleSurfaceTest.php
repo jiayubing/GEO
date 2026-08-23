@@ -134,6 +134,25 @@ class ProjectScopedArticleSurfaceTest extends TestCase
             ->assertDontSee(route('admin.publication-batches.show', ['batchId' => $hidden->id]));
     }
 
+    public function test_regular_admin_does_not_see_batch_decision_controls(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('batch-controls');
+        $batch = PublicationBatch::query()->create([
+            'client_project_id' => $project->id,
+            'status' => PublicationBatchStatus::SUBMITTED,
+            'idempotency_key' => 'batch-controls-submitted',
+            'created_by_admin_id' => $admin->id,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->get(route('admin.publication-batches.show', ['batchId' => $batch->id]))
+            ->assertOk()
+            ->assertDontSee('批准')
+            ->assertDontSee('退回')
+            ->assertDontSee('拒绝');
+    }
+
     public function test_admin_can_read_and_switch_project_context_from_backend_header_api(): void
     {
         $admin = Admin::query()->create([

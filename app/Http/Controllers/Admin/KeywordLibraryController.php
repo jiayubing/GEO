@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Article;
 use App\Models\Keyword;
 use App\Models\KeywordLibrary;
+use App\Models\ClientProject;
+use App\Services\GeoFlow\ProjectResourceResolver;
 use App\Support\AdminWeb;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -21,6 +23,24 @@ use Illuminate\View\View;
 class KeywordLibraryController extends Controller
 {
     private const DETAIL_PER_PAGE = 50;
+
+    public function __construct(private readonly ProjectResourceResolver $projectResources) {}
+
+    private function currentProject(): ?ClientProject
+    {
+        return request()->attributes->get('project_context');
+    }
+
+    private function library(int $id): KeywordLibrary
+    {
+        $project = $this->currentProject();
+        if ($project) {
+            /** @var KeywordLibrary $library */
+            $library = $this->projectResources->requireOwned(KeywordLibrary::class, $id, $project);
+            return $library;
+        }
+        return KeywordLibrary::query()->whereKey($id)->firstOrFail();
+    }
 
     /**
      * 列表页。
@@ -41,7 +61,7 @@ class KeywordLibraryController extends Controller
      */
     public function detail(Request $request, int $libraryId): View|RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $search = trim((string) $request->query('search', ''));
         $keywords = $this->loadDetailKeywords($libraryId, $search);
@@ -63,7 +83,7 @@ class KeywordLibraryController extends Controller
      */
     public function storeKeyword(Request $request, int $libraryId): RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'keyword' => ['required', 'string', 'max:200'],
@@ -100,7 +120,7 @@ class KeywordLibraryController extends Controller
      */
     public function destroyKeywords(Request $request, int $libraryId): RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         /** @var array<int, mixed> $rawIds */
         $rawIds = (array) $request->input('keyword_ids', []);
@@ -130,7 +150,7 @@ class KeywordLibraryController extends Controller
      */
     public function updateFromDetail(Request $request, int $libraryId): RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -152,7 +172,7 @@ class KeywordLibraryController extends Controller
      */
     public function importKeywords(Request $request, int $libraryId): RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'keywords_text' => ['required', 'string'],
@@ -231,6 +251,7 @@ class KeywordLibraryController extends Controller
             'name' => trim((string) $payload['name']),
             'description' => trim((string) ($payload['description'] ?? '')),
             'keyword_count' => 0,
+            ...($this->currentProject() ? ['client_project_id' => $this->currentProject()->id] : []),
         ]);
 
         return redirect()->route('admin.keyword-libraries.index')->with('message', __('admin.keyword_libraries.message.create_success'));
@@ -241,7 +262,7 @@ class KeywordLibraryController extends Controller
      */
     public function edit(int $libraryId): View|RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         return view('admin.keyword-libraries.form', [
             'pageTitle' => __('admin.keyword_libraries.page_title'),
@@ -261,7 +282,7 @@ class KeywordLibraryController extends Controller
      */
     public function update(Request $request, int $libraryId): RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -283,7 +304,7 @@ class KeywordLibraryController extends Controller
      */
     public function destroy(int $libraryId): RedirectResponse
     {
-        $library = KeywordLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         Keyword::query()->where('library_id', $libraryId)->delete();
         $library->delete();
@@ -300,6 +321,9 @@ class KeywordLibraryController extends Controller
             ->select(['id', 'name', 'description', 'created_at', 'updated_at'])
             ->withCount('keywords as actual_count')
             ->orderByDesc('created_at');
+        if ($project = $this->currentProject()) {
+            $query->where('client_project_id', $project->id);
+        }
 
         return $query->get()->map(static function (KeywordLibrary $library): array {
             return [
@@ -318,8 +342,16 @@ class KeywordLibraryController extends Controller
      */
     private function loadStats(): array
     {
-        $totalLibraries = KeywordLibrary::query()->count();
-        $totalKeywords = Keyword::query()->count();
+        $query = KeywordLibrary::query();
+        if ($project = $this->currentProject()) {
+            $query->where('client_project_id', $project->id);
+        }
+        $totalLibraries = $query->count();
+        $keywordsQuery = Keyword::query();
+        if ($project) {
+            $keywordsQuery->whereHas('library', fn ($q) => $q->where('client_project_id', $project->id));
+        }
+        $totalKeywords = $keywordsQuery->count();
 
         return [
             'total_libraries' => $totalLibraries,

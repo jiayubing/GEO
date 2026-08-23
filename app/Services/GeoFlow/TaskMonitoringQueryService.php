@@ -461,6 +461,9 @@ class TaskMonitoringQueryService
      */
     private function workerOverview(?ClientProject $project = null): array
     {
+        if (! Schema::hasTable('worker_heartbeats')) {
+            return [];
+        }
         try {
             return WorkerHeartbeat::query()
                 ->select(['worker_id', 'status', 'last_seen_at', 'meta'])

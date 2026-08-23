@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class ClientProject extends Model
 {
@@ -87,5 +88,20 @@ class ClientProject extends Model
     public function channelSiteIdentities(): HasMany
     {
         return $this->hasMany(ProjectChannelSiteIdentity::class);
+    }
+
+    public function quota(): HasOne
+    {
+        return $this->hasOne(ClientProjectQuota::class, 'client_project_id');
+    }
+
+    public function usageReservations(): HasMany
+    {
+        return $this->hasMany(ClientProjectUsageReservation::class, 'client_project_id');
+    }
+
+    public function operationalAlerts(): HasMany
+    {
+        return $this->hasMany(ClientProjectOperationalAlert::class, 'client_project_id');
     }
 }

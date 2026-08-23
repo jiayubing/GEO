@@ -3,6 +3,7 @@
 namespace App\Services\GeoFlow;
 
 use App\Models\AiUsageEvent;
+use App\Models\ClientProject;
 use Illuminate\Support\Arr;
 
 final class AiUsageObservationWriter
@@ -27,6 +28,10 @@ final class AiUsageObservationWriter
 
         if ($data['scope'] === 'project' && $data['client_project_id'] === null) {
             throw new \InvalidArgumentException('Project AI usage observations require a project.');
+        }
+
+        if ($data['scope'] === 'project' && ! ClientProject::query()->whereKey($data['client_project_id'])->exists()) {
+            throw new \InvalidArgumentException('Project AI usage observations require an existing project.');
         }
 
         if ($data['reservation_key'] !== null) {

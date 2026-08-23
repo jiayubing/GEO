@@ -14,7 +14,7 @@
         @if(in_array($status, ['draft', 'returned'], true))
             <form method="POST" action="{{ route('admin.publication-batches.submit', ['batchId' => $batch->id]) }}">@csrf<button class="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white">提交审核</button></form>
         @endif
-        @if($status === 'submitted')
+        @if($status === 'submitted' && $canDecide)
             @foreach(['approve' => '批准', 'return' => '退回', 'reject' => '拒绝'] as $action => $label)
                 <form method="POST" action="{{ route('admin.publication-batches.'.$action, ['batchId' => $batch->id]) }}">@csrf<button class="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700">{{ $label }}</button></form>
             @endforeach

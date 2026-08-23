@@ -77,7 +77,7 @@ class ArticleEditorAssetController extends Controller
         $storedPath = null;
 
         try {
-            $result = $this->managedImages->withUploadedImagePathLock($uploadedFile, function () use ($article, $uploadedFile, $alt, $position, &$storedPath): array {
+            $result = $this->managedImages->withUploadedImagePathLock($uploadedFile, function () use ($project, $article, $uploadedFile, $alt, $position, &$storedPath): array {
                 return DB::transaction(function () use ($article, $uploadedFile, $alt, $position, &$storedPath): array {
                     $library = $this->editorImageLibrary($project);
                     $stored = $this->managedImages->storeUploadedImage($uploadedFile);

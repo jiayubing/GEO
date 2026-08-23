@@ -132,6 +132,9 @@ final class PublicationBatchController extends Controller
         abort_unless((int) $batch->client_project_id === (int) $project->getKey(), 404);
         $this->access->requireWrite($admin, $project, true);
         $item = PublicationBatchItem::query()->where('publication_batch_id', $batch->getKey())->whereKey($itemId)->firstOrFail();
+        if ($item->status === PublicationBatchItemStatus::LOCAL_PUBLISHED) {
+            return redirect()->route('admin.publication-batches.show', ['batchId' => $batch->getKey()])->with('message', 'publication_batch_local_already_executed');
+        }
         abort_unless($item->status === PublicationBatchItemStatus::APPROVED && $item->target_type?->value === PublicationGateContract::TARGET_LOCAL, 422, '仅批准的本地目标可执行');
         $this->localExecutor->execute($item);
 
@@ -210,6 +213,7 @@ final class PublicationBatchController extends Controller
 
         return view('admin.publication-batches.show', [
             'batch' => $batch,
+            'canDecide' => $this->canDecide($this->admin($request)),
             'pageTitle' => '发布批次 #'.$batch->getKey(),
             'activeMenu' => 'articles',
         ]);
@@ -229,5 +233,10 @@ final class PublicationBatchController extends Controller
         abort_unless($admin instanceof Admin, 403);
 
         return $admin;
+    }
+
+    private function canDecide(Admin $admin): bool
+    {
+        return $admin->isSuperAdmin() || strtolower((string) $admin->role) === 'platform_approver';
     }
 }

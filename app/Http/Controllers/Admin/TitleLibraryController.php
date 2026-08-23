@@ -9,6 +9,8 @@ use App\Models\KeywordLibrary;
 use App\Models\Task;
 use App\Models\Title;
 use App\Models\TitleLibrary;
+use App\Models\ClientProject;
+use App\Services\GeoFlow\ProjectResourceResolver;
 use App\Services\GeoFlow\TitleAiGenerationService;
 use App\Support\AdminWeb;
 use Illuminate\Http\RedirectResponse;
@@ -27,8 +29,20 @@ class TitleLibraryController extends Controller
     private const DETAIL_PER_PAGE = 20;
 
     public function __construct(
-        private TitleAiGenerationService $titleAiGenerationService
+        private TitleAiGenerationService $titleAiGenerationService,
+        private readonly ProjectResourceResolver $projectResources
     ) {}
+
+    private function currentProject(): ?ClientProject { return request()->attributes->get('project_context'); }
+
+    private function library(int $id): TitleLibrary
+    {
+        if ($project = $this->currentProject()) {
+            /** @var TitleLibrary $library */
+            return $this->projectResources->requireOwned(TitleLibrary::class, $id, $project);
+        }
+        return TitleLibrary::query()->whereKey($id)->firstOrFail();
+    }
 
     /**
      * 列表页。
@@ -49,7 +63,7 @@ class TitleLibraryController extends Controller
      */
     public function detail(Request $request, int $libraryId): View|RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $titles = $this->loadDetailTitles($libraryId, '');
         $usageTotal = (int) (Title::query()->where('library_id', $libraryId)->sum('used_count') ?? 0);
@@ -69,12 +83,13 @@ class TitleLibraryController extends Controller
      */
     public function aiGenerate(int $libraryId): View|RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $keywordLibraries = KeywordLibrary::query()
             ->select(['id', 'name'])
             ->withCount(['keywords as keyword_count'])
             ->orderByDesc('created_at')
+            ->when($this->currentProject(), fn ($query, $project) => $query->where('client_project_id', $project->id))
             ->get();
         $aiModels = AiModel::query()
             ->select(['id', 'name', 'model_id'])
@@ -98,7 +113,7 @@ class TitleLibraryController extends Controller
      */
     public function generateWithAi(Request $request, int $libraryId): RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'keyword_library_id' => ['required', 'integer'],
@@ -121,7 +136,9 @@ class TitleLibraryController extends Controller
             'title_count.max' => __('admin.title_ai_generate.error.invalid_count'),
         ]);
 
-        $keywordLibrary = KeywordLibrary::query()->whereKey((int) $payload['keyword_library_id'])->firstOrFail();
+        $keywordLibrary = $this->currentProject()
+            ? $this->projectResources->requireOwned(KeywordLibrary::class, (int) $payload['keyword_library_id'], $this->currentProject())
+            : KeywordLibrary::query()->whereKey((int) $payload['keyword_library_id'])->firstOrFail();
 
         $aiModel = AiModel::query()
             ->whereKey((int) $payload['ai_model_id'])
@@ -200,7 +217,7 @@ class TitleLibraryController extends Controller
      */
     public function storeTitle(Request $request, int $libraryId): RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'title' => ['required', 'string', 'max:500'],
@@ -240,7 +257,7 @@ class TitleLibraryController extends Controller
      */
     public function destroyTitles(Request $request, int $libraryId): RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         /** @var array<int, mixed> $rawIds */
         $rawIds = (array) $request->input('title_ids', []);
@@ -269,7 +286,7 @@ class TitleLibraryController extends Controller
      */
     public function importTitles(Request $request, int $libraryId): RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'titles_text' => ['required', 'string'],
@@ -349,6 +366,7 @@ class TitleLibraryController extends Controller
         TitleLibrary::query()->create([
             'name' => trim((string) $payload['name']),
             'description' => trim((string) ($payload['description'] ?? '')),
+            ...($this->currentProject() ? ['client_project_id' => $this->currentProject()->id] : []),
             'title_count' => 0,
             'generation_type' => 'manual',
             'generation_rounds' => 1,
@@ -363,7 +381,7 @@ class TitleLibraryController extends Controller
      */
     public function edit(int $libraryId): View|RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         return view('admin.title-libraries.form', [
             'pageTitle' => __('admin.title_libraries.page_title'),
@@ -383,7 +401,7 @@ class TitleLibraryController extends Controller
      */
     public function update(Request $request, int $libraryId): RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -405,7 +423,7 @@ class TitleLibraryController extends Controller
      */
     public function destroy(int $libraryId): RedirectResponse
     {
-        $library = TitleLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $taskCount = Task::query()->where('title_library_id', $libraryId)->count();
         if ($taskCount > 0) {
@@ -430,6 +448,9 @@ class TitleLibraryController extends Controller
                 'titles as ai_count' => fn ($builder) => $builder->where('is_ai_generated', true),
             ])
             ->orderByDesc('created_at');
+        if ($project = $this->currentProject()) {
+            $query->where('client_project_id', $project->id);
+        }
 
         return $query->get()->map(static function (TitleLibrary $library): array {
             return [
@@ -449,9 +470,17 @@ class TitleLibraryController extends Controller
      */
     private function loadStats(): array
     {
-        $totalLibraries = TitleLibrary::query()->count();
-        $totalTitles = Title::query()->count();
-        $aiTitles = Title::query()->where('is_ai_generated', true)->count();
+        $libraries = TitleLibrary::query();
+        if ($project = $this->currentProject()) {
+            $libraries->where('client_project_id', $project->id);
+        }
+        $totalLibraries = $libraries->count();
+        $titles = Title::query();
+        if ($project) {
+            $titles->whereHas('library', fn ($q) => $q->where('client_project_id', $project->id));
+        }
+        $totalTitles = (clone $titles)->count();
+        $aiTitles = $titles->where('is_ai_generated', true)->count();
 
         return [
             'total_libraries' => $totalLibraries,
@@ -576,7 +605,7 @@ class TitleLibraryController extends Controller
     private function refreshTitleLibraryCount(int $libraryId): void
     {
         $count = Title::query()->where('library_id', $libraryId)->count();
-        TitleLibrary::query()->whereKey($libraryId)->update([
+        $this->library($libraryId)->update([
             'title_count' => $count,
         ]);
     }

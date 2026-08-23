@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\ArticleImage;
 use App\Models\Image;
 use App\Models\ImageLibrary;
+use App\Models\ClientProject;
+use App\Services\GeoFlow\ProjectResourceResolver;
 use App\Models\Task;
 use App\Services\GeoFlow\ManagedImageFileService;
 use App\Support\AdminWeb;
@@ -25,7 +27,17 @@ class ImageLibraryController extends Controller
 {
     private const DETAIL_PER_PAGE = 24;
 
-    public function __construct(private readonly ManagedImageFileService $managedImages) {}
+    public function __construct(private readonly ManagedImageFileService $managedImages, private readonly ProjectResourceResolver $projectResources) {}
+
+    private function currentProject(): ?ClientProject { return request()->attributes->get('project_context'); }
+    private function library(int $id): ImageLibrary
+    {
+        if ($project = $this->currentProject()) {
+            /** @var ImageLibrary $library */
+            return $this->projectResources->requireOwned(ImageLibrary::class, $id, $project);
+        }
+        return ImageLibrary::query()->whereKey($id)->firstOrFail();
+    }
 
     /**
      * 列表页。
@@ -46,7 +58,7 @@ class ImageLibraryController extends Controller
      */
     public function detail(Request $request, int $libraryId): View|RedirectResponse
     {
-        $library = ImageLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $search = trim((string) $request->query('search', ''));
         $images = $this->loadDetailImages($libraryId, $search);
@@ -73,7 +85,7 @@ class ImageLibraryController extends Controller
      */
     public function updateFromDetail(Request $request, int $libraryId): RedirectResponse
     {
-        $library = ImageLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -95,7 +107,7 @@ class ImageLibraryController extends Controller
      */
     public function uploadImages(Request $request, int $libraryId): RedirectResponse
     {
-        $library = ImageLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $request->validate([
             'images' => ['required', 'array', 'min:1'],
@@ -178,7 +190,7 @@ class ImageLibraryController extends Controller
      */
     public function destroyImages(Request $request, int $libraryId): RedirectResponse
     {
-        $library = ImageLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         /** @var array<int, mixed> $rawIds */
         $rawIds = (array) $request->input('image_ids', []);
@@ -253,6 +265,7 @@ class ImageLibraryController extends Controller
             'description' => trim((string) ($payload['description'] ?? '')),
             'image_count' => 0,
             'used_task_count' => 0,
+            ...($this->currentProject() ? ['client_project_id' => $this->currentProject()->id] : []),
         ]);
 
         return redirect()->route('admin.image-libraries.index')->with('message', __('admin.image_libraries.message.create_success'));
@@ -263,7 +276,7 @@ class ImageLibraryController extends Controller
      */
     public function edit(int $libraryId): View|RedirectResponse
     {
-        $library = ImageLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         return view('admin.image-libraries.form', [
             'pageTitle' => __('admin.image_libraries.page_title'),
@@ -283,7 +296,7 @@ class ImageLibraryController extends Controller
      */
     public function update(Request $request, int $libraryId): RedirectResponse
     {
-        $library = ImageLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -305,7 +318,7 @@ class ImageLibraryController extends Controller
      */
     public function destroy(int $libraryId): RedirectResponse
     {
-        $library = ImageLibrary::query()->whereKey($libraryId)->firstOrFail();
+        $library = $this->library($libraryId);
 
         $taskCount = Task::query()->where('image_library_id', $libraryId)->count();
         if ($taskCount > 0) {
@@ -340,6 +353,9 @@ class ImageLibraryController extends Controller
             ->withCount('images as actual_count')
             ->withSum('images as total_size', 'file_size')
             ->orderByDesc('created_at');
+        if ($project = $this->currentProject()) {
+            $query->where('client_project_id', $project->id);
+        }
 
         return $query->get()->map(static function (ImageLibrary $library): array {
             return [
@@ -359,9 +375,15 @@ class ImageLibraryController extends Controller
      */
     private function loadStats(): array
     {
-        $totalLibraries = ImageLibrary::query()->count();
-        $totalImages = Image::query()->count();
-        $totalSize = (int) (Image::query()->sum('file_size') ?? 0);
+        $libraries = ImageLibrary::query();
+        $images = Image::query();
+        if ($project = $this->currentProject()) {
+            $libraries->where('client_project_id', $project->id);
+            $images->whereHas('library', fn ($q) => $q->where('client_project_id', $project->id));
+        }
+        $totalLibraries = $libraries->count();
+        $totalImages = (clone $images)->count();
+        $totalSize = (int) $images->sum('file_size');
 
         return [
             'total_libraries' => $totalLibraries,
@@ -407,7 +429,7 @@ class ImageLibraryController extends Controller
     private function refreshImageLibraryCount(int $libraryId): void
     {
         $count = Image::query()->where('library_id', $libraryId)->count();
-        ImageLibrary::query()->whereKey($libraryId)->update([
+        $this->library($libraryId)->update([
             'image_count' => $count,
         ]);
     }

@@ -15,28 +15,35 @@ use App\Models\SiteSetting;
 use App\Models\Task;
 use App\Models\Title;
 use App\Models\TitleLibrary;
+use App\Models\ClientProject;
+use App\Services\GeoFlow\ProjectAccessService;
 use App\Support\AdminWeb;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\View\View;
+use Illuminate\Http\Request;
 
 /**
  * 素材管理首页控制器。
  */
 class MaterialsController extends Controller
 {
+    public function __construct(private readonly ProjectAccessService $projectAccess) {}
+
     /**
      * 展示素材管理总览页。
      */
-    public function index(): View
+    public function index(Request $request): View
     {
+        $project = $this->currentProject($request);
+
         return view('admin.materials.index', [
             'pageTitle' => __('admin.materials.page_title'),
             'activeMenu' => 'materials',
             'adminSiteName' => AdminWeb::siteName(),
             'canManageProtectedWorkflows' => auth('admin')->user()?->canManageProtectedWorkflows() === true,
-            'stats' => $this->loadStats(),
+            'stats' => $this->loadStats($project),
         ]);
     }
 
@@ -65,10 +72,16 @@ class MaterialsController extends Controller
      *     authors:int
      * }
      */
-    private function loadStats(): array
+    private function loadStats(?ClientProject $project = null): array
     {
-        $knowledgeChunks = (int) KnowledgeChunk::query()->count();
-        $vectorizedChunks = (int) KnowledgeChunk::query()
+        $knowledgeBases = KnowledgeBase::query()->when($project, fn ($query) => $query->where('client_project_id', $project->id));
+        $keywordLibraries = KeywordLibrary::query()->when($project, fn ($query) => $query->where('client_project_id', $project->id));
+        $titleLibraries = TitleLibrary::query()->when($project, fn ($query) => $query->where('client_project_id', $project->id));
+        $imageLibraries = ImageLibrary::query()->when($project, fn ($query) => $query->where('client_project_id', $project->id));
+        $authors = Author::query()->when($project, fn ($query) => $query->where('client_project_id', $project->id));
+        $knowledgeChunksQuery = KnowledgeChunk::query()->when($project, fn ($query) => $query->whereHas('knowledgeBase', fn ($base) => $base->where('client_project_id', $project->id)));
+        $knowledgeChunks = (int) (clone $knowledgeChunksQuery)->count();
+        $vectorizedChunks = (int) (clone $knowledgeChunksQuery)
             ->whereNotNull('embedding_model_id')
             ->where('embedding_dimensions', '>', 0)
             ->count();
@@ -88,32 +101,32 @@ class MaterialsController extends Controller
         $latestKnowledgeUpdatedAt = $this->latestKnowledgeUpdatedAt();
 
         return [
-            'keyword_libraries' => KeywordLibrary::query()->count(),
-            'total_keywords' => Keyword::query()->count(),
-            'title_libraries' => TitleLibrary::query()->count(),
-            'total_titles' => Title::query()->count(),
-            'image_libraries' => ImageLibrary::query()->count(),
-            'total_images' => Image::query()->count(),
-            'knowledge_bases' => KnowledgeBase::query()->count(),
+            'keyword_libraries' => (clone $keywordLibraries)->count(),
+            'total_keywords' => Keyword::query()->whereHas('library', fn ($query) => $query->when($project, fn ($library) => $library->where('client_project_id', $project->id)))->count(),
+            'title_libraries' => (clone $titleLibraries)->count(),
+            'total_titles' => Title::query()->whereHas('library', fn ($query) => $query->when($project, fn ($library) => $library->where('client_project_id', $project->id)))->count(),
+            'image_libraries' => (clone $imageLibraries)->count(),
+            'total_images' => Image::query()->whereHas('library', fn ($query) => $query->when($project, fn ($library) => $library->where('client_project_id', $project->id)))->count(),
+            'knowledge_bases' => (clone $knowledgeBases)->count(),
             'knowledge_chunks' => $knowledgeChunks,
             'vectorized_chunks' => $vectorizedChunks,
             'unvectorized_chunks' => max(0, $knowledgeChunks - $vectorizedChunks),
-            'knowledge_usage_count' => $this->knowledgeUsageTaskCount(),
+            'knowledge_usage_count' => $this->knowledgeUsageTaskCount($project),
             'active_embedding_models' => AiModel::query()
                 ->where('status', 'active')
                 ->whereRaw("COALESCE(NULLIF(model_type, ''), 'chat') = 'embedding'")
                 ->count(),
             'default_embedding_model' => $defaultEmbeddingModel,
             'chunk_strategy' => in_array($chunkStrategy, ['rule', 'auto', 'semantic_llm'], true) ? $chunkStrategy : 'rule',
-            'latest_knowledge_updated_at' => $latestKnowledgeUpdatedAt,
-            'metadata_ready_count' => $this->knowledgeMetadataReadyCount(),
-            'reviewed_knowledge_bases' => $this->reviewedKnowledgeBaseCount(),
-            'high_risk_pending_count' => $this->highRiskPendingKnowledgeBaseCount(),
-            'authors' => Author::query()->count(),
+            'latest_knowledge_updated_at' => $this->latestKnowledgeUpdatedAt($project),
+            'metadata_ready_count' => $this->knowledgeMetadataReadyCount($project),
+            'reviewed_knowledge_bases' => $this->reviewedKnowledgeBaseCount($project),
+            'high_risk_pending_count' => $this->highRiskPendingKnowledgeBaseCount($project),
+            'authors' => (clone $authors)->count(),
         ];
     }
 
-    private function knowledgeMetadataReadyCount(): int
+    private function knowledgeMetadataReadyCount(?ClientProject $project = null): int
     {
         $columns = array_values(array_filter(
             ['source_name', 'source_url', 'business_line'],
@@ -124,6 +137,7 @@ class MaterialsController extends Controller
         }
 
         return KnowledgeBase::query()
+            ->when($project, fn ($query) => $query->where('client_project_id', $project->id))
             ->where(function ($query) use ($columns): void {
                 foreach ($columns as $column) {
                     $query->orWhere(function ($inner) use ($column): void {
@@ -134,10 +148,11 @@ class MaterialsController extends Controller
             ->count();
     }
 
-    private function knowledgeUsageTaskCount(): int
+    private function knowledgeUsageTaskCount(?ClientProject $project = null): int
     {
         $taskIds = Task::query()
             ->whereNotNull('knowledge_base_id')
+            ->when($project, fn ($query) => $query->where('client_project_id', $project->id))
             ->pluck('id')
             ->map(static fn ($id): int => (int) $id)
             ->all();
@@ -146,6 +161,7 @@ class MaterialsController extends Controller
             $taskIds = array_merge(
                 $taskIds,
                 DB::table('task_knowledge_bases')
+                    ->when($project, fn ($query) => $query->whereIn('task_id', Task::query()->where('client_project_id', $project->id)->select('id')))
                     ->pluck('task_id')
                     ->map(static fn ($id): int => (int) $id)
                     ->all()
@@ -155,24 +171,26 @@ class MaterialsController extends Controller
         return count(array_unique(array_filter($taskIds, static fn (int $id): bool => $id > 0)));
     }
 
-    private function reviewedKnowledgeBaseCount(): int
+    private function reviewedKnowledgeBaseCount(?ClientProject $project = null): int
     {
         if (! Schema::hasColumn('knowledge_bases', 'review_status')) {
             return 0;
         }
 
         return KnowledgeBase::query()
+            ->when($project, fn ($query) => $query->where('client_project_id', $project->id))
             ->where('review_status', 'reviewed')
             ->count();
     }
 
-    private function highRiskPendingKnowledgeBaseCount(): int
+    private function highRiskPendingKnowledgeBaseCount(?ClientProject $project = null): int
     {
         if (! Schema::hasColumn('knowledge_bases', 'risk_level') || ! Schema::hasColumn('knowledge_bases', 'review_status')) {
             return 0;
         }
 
         return KnowledgeBase::query()
+            ->when($project, fn ($query) => $query->where('client_project_id', $project->id))
             ->where('risk_level', 'high')
             ->where(function ($query): void {
                 $query
@@ -182,11 +200,11 @@ class MaterialsController extends Controller
             ->count();
     }
 
-    private function latestKnowledgeUpdatedAt(): string
+    private function latestKnowledgeUpdatedAt(?ClientProject $project = null): string
     {
         $timestamps = array_filter([
-            KnowledgeBase::query()->max('updated_at'),
-            KnowledgeChunk::query()->max('updated_at'),
+            KnowledgeBase::query()->when($project, fn ($query) => $query->where('client_project_id', $project->id))->max('updated_at'),
+            KnowledgeChunk::query()->when($project, fn ($query) => $query->whereHas('knowledgeBase', fn ($base) => $base->where('client_project_id', $project->id)))->max('updated_at'),
         ]);
 
         if ($timestamps === []) {
@@ -194,5 +212,16 @@ class MaterialsController extends Controller
         }
 
         return Carbon::parse(max($timestamps))->format('Y-m-d H:i');
+    }
+
+    private function currentProject(Request $request): ?ClientProject
+    {
+        $admin = $request->user('admin');
+        if (! $admin) {
+            return null;
+        }
+
+        return $request->attributes->get('project_context')
+            ?: $this->projectAccess->resolveContext($request, $admin);
     }
 }

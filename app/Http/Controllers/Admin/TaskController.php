@@ -19,6 +19,8 @@ use App\Services\GeoFlow\TaskDistributionChannelSelector;
 use App\Services\GeoFlow\TaskLifecycleService;
 use App\Services\GeoFlow\TaskMonitoringQueryService;
 use App\Services\GeoFlow\ProjectAccessService;
+use App\Services\GeoFlow\ProjectOperationsReportService;
+use App\Services\GeoFlow\ProjectOperationalAlertService;
 use App\Support\AdminWeb;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -44,6 +46,8 @@ class TaskController extends Controller
         private readonly TaskMonitoringQueryService $taskMonitoringQueryService,
         private readonly DistributionOrchestrator $distributionOrchestrator,
         private readonly ProjectAccessService $projectAccess,
+        private readonly ProjectOperationsReportService $projectOperationsReport,
+        private readonly ProjectOperationalAlertService $projectAlerts,
     ) {}
 
     /**
@@ -293,10 +297,11 @@ class TaskController extends Controller
     public function healthCheck(Request $request): JsonResponse
     {
         try {
+            $project = $this->projectContext($request);
             $overview = $this->taskMonitoringQueryService->buildAdminOverview(
                 max(1, $request->integer('page', 1)),
                 50,
-                $this->projectContext($request),
+                $project,
             );
 
             return response()->json([
@@ -307,6 +312,8 @@ class TaskController extends Controller
                 'recent_runs' => $overview['recent_runs'],
                 'pagination' => $overview['pagination'],
                 'task_summary' => $overview['task_summary'],
+                'project_report' => $project instanceof ClientProject ? $this->projectOperationsReport->projectSummary($project) : null,
+                'project_alerts' => $project instanceof ClientProject ? $this->projectAlerts->open($project) : [],
             ]);
         } catch (Throwable $e) {
             return response()->json([
@@ -361,7 +368,7 @@ class TaskController extends Controller
         abort_unless($admin instanceof \App\Models\Admin, 401);
         $project = $request->attributes->get('project_context')
             ?: $this->projectAccess->resolveContext($request, $admin);
-        if ($write && ! $project instanceof ClientProject) {
+        if ($write && ! $project instanceof ClientProject && strtolower((string) $admin->role) === 'operator') {
             abort(403, 'project_target_required');
         }
         if ($project instanceof ClientProject) {
@@ -559,7 +566,7 @@ class TaskController extends Controller
         if ($project instanceof ClientProject) {
             $distributionChannelsQuery->whereHas('clientProjects', function ($projects) use ($project): void {
                 $projects->whereKey($project->id)
-                    ->wherePivot('status', 'active');
+                    ->where('client_project_distribution_channels.status', 'active');
             });
         }
         $distributionChannels = $distributionChannelsQuery->get()

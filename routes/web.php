@@ -20,6 +20,7 @@ use App\Http\Controllers\Admin\ArticleEditorAssetController;
 use App\Http\Controllers\Admin\ArticleEditorAssistantController;
 use App\Http\Controllers\Admin\AuthorController;
 use App\Http\Controllers\Admin\CategoryController;
+use App\Http\Controllers\Admin\ClientProjectController;
 use App\Http\Controllers\Admin\ContentAnalyticsController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DistributionAnalyticsController;
@@ -93,6 +94,11 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
     Route::middleware(['admin.auth', 'admin.activity'])->prefix('project-context')->name('project-context.')->group(function (): void {
         Route::get('/', [ProjectContextController::class, 'show'])->name('show');
         Route::post('switch', [ProjectContextController::class, 'switch'])->name('switch');
+    });
+    Route::middleware(['admin.auth', 'admin.activity'])->prefix('client-projects')->name('client-projects.')->group(function (): void {
+        Route::get('create', [ClientProjectController::class, 'create'])->name('create');
+        Route::post('/', [ClientProjectController::class, 'store'])->name('store');
+        Route::post('form', [ClientProjectController::class, 'storePage'])->name('store.page');
     });
 
     // 后台受保护路由；阶段 2 完成资源过滤前，普通 operator 暂不开放这些全局页面。
