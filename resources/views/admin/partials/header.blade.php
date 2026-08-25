@@ -2,6 +2,7 @@
     $currentAdmin = auth('admin')->user();
     $adminBrandName = $adminBrandName ?? \App\Support\AdminWeb::siteName();
     $isSuperAdmin = $currentAdmin && method_exists($currentAdmin, 'canManageProtectedWorkflows') && $currentAdmin->canManageProtectedWorkflows();
+    $canCreateClientProject = $currentAdmin instanceof \App\Models\Admin && $currentAdmin->canCreateClientProject();
     $adminRoleLabel = $isSuperAdmin ? __('admin.header.super_admin') : __('admin.header.admin');
     $updateNotification = is_array($adminUpdateNotificationPayload ?? null) ? $adminUpdateNotificationPayload : [];
     $updateState = is_array($updateNotification['state'] ?? null) ? $updateNotification['state'] : [];
@@ -28,8 +29,11 @@
         'ai_config' => ['route' => 'admin.ai.configurator', 'name' => __('admin.nav.ai_config')],
         'site_settings' => ['route' => 'admin.site-settings.index', 'name' => __('admin.nav.site_settings')],
     ];
-    if (!$isSuperAdmin) {
-        unset($menu['distribution']);
+    if (! $isSuperAdmin) {
+        unset($menu['dashboard'], $menu['analytics'], $menu['distribution'], $menu['ai_config'], $menu['site_settings']);
+    }
+    if ($isSuperAdmin) {
+        $menu['publication_approvals'] = ['route' => 'admin.publication-batch-approvals.index', 'name' => __('admin.nav.publication_approvals')];
     }
     if ($isSuperAdmin) {
         $menu['admin_users'] = ['route' => 'admin.admin-users.index', 'name' => __('admin.nav.admin_users')];
@@ -66,6 +70,12 @@
         'admin.manual-publications.show' => 'articles',
         'admin.manual-publications.edit' => 'articles',
         'admin.manual-publications.settings.index' => 'articles',
+        'admin.publication-batch-approvals.index' => 'publication_approvals',
+        'admin.publication-batch-approvals.show' => 'publication_approvals',
+        'admin.publication-batch-approvals.approve' => 'publication_approvals',
+        'admin.publication-batch-approvals.return' => 'publication_approvals',
+        'admin.publication-batch-approvals.reject' => 'publication_approvals',
+        'admin.publication-batch-approvals.execute-local' => 'publication_approvals',
         'admin.categories.index' => 'materials',
         'admin.categories.create' => 'materials',
         'admin.categories.edit' => 'materials',
@@ -127,7 +137,7 @@
 <nav class="bg-white shadow-sm border-b">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex h-16 items-center gap-3 lg:gap-4 min-w-0">
-            <a href="{{ route('admin.dashboard') }}" class="shrink-0 text-lg sm:text-xl font-semibold text-gray-900">{{ $adminBrandName }}</a>
+            <a href="{{ route('admin.entry') }}" class="shrink-0 text-lg sm:text-xl font-semibold text-gray-900">{{ $adminBrandName }}</a>
             <nav class="hidden md:flex flex-1 min-w-0 items-center">
                 <div class="flex w-full min-w-0 items-center gap-3 lg:gap-5 overflow-x-auto overscroll-x-contain py-2 -my-2 [scrollbar-width:thin]">
                     @foreach ($menu as $key => $item)
@@ -141,17 +151,30 @@
             <div class="flex shrink-0 items-center gap-2 sm:gap-3 ml-auto">
                 <div class="flex items-center rounded-lg border border-gray-200 bg-white px-2 py-1 shadow-sm">
                     <i data-lucide="folder-kanban" class="w-4 h-4 text-gray-400 mr-1.5"></i>
-                    <label for="admin-project-context" class="sr-only">{{ __('admin.project_context.label') }}</label>
-                    <select id="admin-project-context"
-                            class="admin-project-context-select max-w-[10rem] appearance-none bg-transparent pr-5 text-sm font-medium text-gray-700 outline-none cursor-pointer"
-                            aria-label="{{ __('admin.project_context.label') }}"
-                            data-project-context-url="{{ route('admin.project-context.show') }}"
-                            data-project-switch-url="{{ route('admin.project-context.switch') }}"
-                            data-project-placeholder="{{ __('admin.project_context.placeholder') }}"
-                            data-project-switch-error="{{ __('admin.project_context.switch_error') }}">
-                        <option value="">{{ __('admin.project_context.loading') }}</option>
-                    </select>
+                    @if($isSuperAdmin)
+                        <span class="max-w-[12rem] truncate text-sm font-medium text-gray-700"
+                              title="{{ __('admin.project_context.platform_global') }}">
+                            {{ __('admin.project_context.platform_global') }}
+                        </span>
+                    @else
+                        <label for="admin-project-context" class="sr-only">{{ __('admin.project_context.label') }}</label>
+                        <select id="admin-project-context"
+                                class="admin-project-context-select max-w-[10rem] appearance-none bg-transparent pr-5 text-sm font-medium text-gray-700 outline-none cursor-pointer"
+                                aria-label="{{ __('admin.project_context.label') }}"
+                                data-project-context-url="{{ route('admin.project-context.show') }}"
+                                data-project-switch-url="{{ route('admin.project-context.switch') }}"
+                                data-project-placeholder="{{ __('admin.project_context.placeholder') }}"
+                                data-project-switch-error="{{ __('admin.project_context.switch_error') }}">
+                            <option value="">{{ __('admin.project_context.loading') }}</option>
+                        </select>
+                    @endif
                 </div>
+                @if ($canCreateClientProject)
+                    <a href="{{ route('admin.client-projects.create') }}" class="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50" title="{{ __('admin.project_context.create') }}">
+                        <i data-lucide="plus" class="h-4 w-4"></i>
+                        <span class="hidden lg:inline">{{ __('admin.project_context.create') }}</span>
+                    </a>
+                @endif
                 <div class="relative">
                     <button onclick="toggleAdminNotifications()" class="relative rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors duration-200" type="button" aria-label="{{ __('admin.header.notifications.label') }}" title="{{ __('admin.header.notifications.label') }}">
                         <i data-lucide="bell" class="w-5 h-5"></i>
@@ -243,15 +266,15 @@
                             <div class="text-sm text-gray-700">{{ __('admin.header.welcome', ['name' => $currentAdmin->username ?? '']) }}</div>
                             <div class="text-xs text-gray-400">{{ $adminRoleLabel }}</div>
                         </div>
-                        <a href="{{ route('admin.dashboard') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                            <i data-lucide="home" class="w-4 h-4 inline mr-2"></i>
-                            {{ __('admin.nav.back_home') }}
-                        </a>
-                        <a href="{{ route('admin.site-settings.index') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                            <i data-lucide="settings" class="w-4 h-4 inline mr-2"></i>
-                            {{ __('admin.nav.system_settings') }}
-                        </a>
                         @if ($isSuperAdmin)
+                            <a href="{{ route('admin.dashboard') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                <i data-lucide="home" class="w-4 h-4 inline mr-2"></i>
+                                {{ __('admin.nav.back_home') }}
+                            </a>
+                            <a href="{{ route('admin.site-settings.index') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                <i data-lucide="settings" class="w-4 h-4 inline mr-2"></i>
+                                {{ __('admin.nav.system_settings') }}
+                            </a>
                             <a href="{{ route('admin.admin-users.index') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                                 <i data-lucide="users" class="w-4 h-4 inline mr-2"></i>
                                 {{ __('admin.nav.admin_management') }}
@@ -263,6 +286,11 @@
                             <a href="{{ route('admin.api-tokens.index') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                                 <i data-lucide="key-round" class="w-4 h-4 inline mr-2"></i>
                                 {{ __('admin.nav.api_tokens') }}
+                            </a>
+                        @elseif ($canCreateClientProject)
+                            <a href="{{ route('admin.client-projects.create') }}" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                <i data-lucide="folder-plus" class="w-4 h-4 inline mr-2"></i>
+                                {{ __('admin.project_context.create') }}
                             </a>
                         @endif
                         <div class="border-t border-gray-100"></div>

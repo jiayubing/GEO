@@ -115,14 +115,6 @@
                 </div>
             </form>
             <div class="-mt-2 flex flex-col gap-3 px-6 pb-6 sm:flex-row sm:items-center sm:justify-end">
-                <form method="POST" action="{{ route('admin.knowledge-bases.chunks.refresh', ['knowledgeBaseId' => (int) $knowledgeBase->id]) }}">
-                    @csrf
-                    <input type="hidden" name="redirect_to" value="{{ route('admin.knowledge-bases.detail', ['knowledgeBaseId' => (int) $knowledgeBase->id], false) }}">
-                    <button type="submit" class="inline-flex w-full items-center justify-center rounded-md border border-orange-200 bg-orange-50 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-100 sm:w-auto" title="{{ __('admin.knowledge_detail.resubmit_chunks_help') }}">
-                        <i data-lucide="refresh-cw" class="w-4 h-4 mr-2"></i>
-                        {{ __('admin.knowledge_detail.resubmit_chunks') }}
-                    </button>
-                </form>
                 <button type="submit" form="knowledge-detail-form" class="inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-md text-sm text-white bg-orange-600 hover:bg-orange-700">
                     <i data-lucide="save" class="w-4 h-4 mr-2"></i>
                     {{ __('admin.knowledge_detail.save_changes') }}
@@ -130,15 +122,7 @@
             </div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-            <div class="bg-white shadow rounded-lg p-5">
-                <div class="text-sm text-gray-500">{{ __('admin.knowledge_detail.chunk_count') }}</div>
-                <div class="mt-2 text-2xl font-semibold text-gray-900">{{ number_format((int) ($chunkStats['chunk_count'] ?? 0)) }}</div>
-            </div>
-            <div class="bg-white shadow rounded-lg p-5">
-                <div class="text-sm text-gray-500">{{ __('admin.knowledge_detail.vectorized_count') }}</div>
-                <div class="mt-2 text-2xl font-semibold text-gray-900">{{ number_format((int) ($chunkStats['vectorized_count'] ?? 0)) }}</div>
-            </div>
+        <div class="grid grid-cols-1 gap-6 mb-6">
             <div class="bg-white shadow rounded-lg p-5">
                 <div class="text-sm text-gray-500">{{ __('admin.knowledge_detail.updated_at') }}</div>
                 <div class="mt-2 text-sm font-medium text-gray-900">{{ optional($knowledgeBase->updated_at)->format('Y-m-d H:i:s') ?? '-' }}</div>
@@ -163,71 +147,6 @@
             @endif
         </div>
 
-        <div id="chunk-preview" class="bg-white shadow rounded-lg overflow-hidden">
-            <div class="px-6 py-4 border-b border-gray-200">
-                <h3 class="text-lg font-medium text-gray-900">{{ __('admin.knowledge_detail.chunk_preview_title') }}</h3>
-                <p class="mt-1 text-sm text-gray-500">{{ __('admin.knowledge_detail.chunk_preview_desc') }}</p>
-            </div>
-            @if ($chunkPreviewRows->isEmpty())
-                <div class="px-6 py-8 text-sm text-gray-500">{{ __('admin.knowledge_detail.chunk_preview_empty') }}</div>
-            @else
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.knowledge_detail.chunk_index') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.knowledge_detail.chunk_status') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.knowledge_detail.chunk_length') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.knowledge_detail.chunk_tokens') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.knowledge_detail.chunk_embedding') }}</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.knowledge_detail.chunk_preview_column') }}</th>
-                        </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                        @foreach ($chunkPreviewRows as $chunkRow)
-                            @php
-                                $isVectorized = $chunkRow['embedding_model_id'] !== null && (int) $chunkRow['embedding_dimensions'] > 0;
-                            @endphp
-                            <tr>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">#{{ (int) $chunkRow['chunk_index'] }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                                    @if ($isVectorized)
-                                        <span class="inline-flex px-2 py-0.5 rounded bg-green-100 text-green-700">{{ __('admin.knowledge_detail.chunk_status_vectorized') }}</span>
-                                    @else
-                                        <span class="inline-flex px-2 py-0.5 rounded bg-amber-100 text-amber-700">{{ __('admin.knowledge_detail.chunk_status_fallback') }}</span>
-                                    @endif
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{ __('admin.knowledge_bases.text_unit', ['count' => (int) $chunkRow['content_length']]) }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{ number_format((int) $chunkRow['token_count']) }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                                    @if ($isVectorized)
-                                        {{ __('admin.knowledge_detail.chunk_embedding_meta', ['model_id' => (int) $chunkRow['embedding_model_id'], 'dimensions' => (int) $chunkRow['embedding_dimensions']]) }}
-                                    @else
-                                        {{ __('admin.knowledge_detail.chunk_embedding_none') }}
-                                    @endif
-                                </td>
-                                <td class="px-6 py-4 text-sm text-gray-700">
-                                    <div class="mb-2 flex flex-wrap items-center gap-2">
-                                        <span class="inline-flex rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
-                                            {{ __('admin.knowledge_detail.chunk_strategy_label') }}:
-                                            {{ __('admin.knowledge_detail.chunk_strategy_'.$chunkRow['chunk_strategy']) }}
-                                        </span>
-                                        @if ($chunkRow['chunk_title'] !== '')
-                                            <span class="text-xs font-medium text-gray-700">{{ $chunkRow['chunk_title'] }}</span>
-                                        @endif
-                                    </div>
-                                    @if ($chunkRow['section_path'] !== '')
-                                        <div class="mb-2 text-xs text-gray-500">{{ $chunkRow['section_path'] }}</div>
-                                    @endif
-                                    <div class="max-w-xl break-words">{{ $chunkRow['content_preview'] }}</div>
-                                </td>
-                            </tr>
-                        @endforeach
-                        </tbody>
-                    </table>
-                </div>
-            @endif
-        </div>
     </div>
 @endsection
 

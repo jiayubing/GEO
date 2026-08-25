@@ -11,13 +11,15 @@ use App\Http\Middleware\AdminWebLocale;
 use App\Http\Middleware\AssignApiRequestId;
 use App\Http\Middleware\AuthenticateAdminWeb;
 use App\Http\Middleware\AuthenticateApiToken;
-use App\Http\Middleware\EnsureApiScope;
 use App\Http\Middleware\EnsureApiProjectBinding;
-use App\Http\Middleware\EnsureSuperAdmin;
+use App\Http\Middleware\EnsureApiScope;
 use App\Http\Middleware\EnsureProjectScopedSurface;
+use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\LogAdminActivity;
 use App\Http\Middleware\RecordSiteViewLog;
 use App\Http\Middleware\SiteWebLocale;
+use App\Models\Admin;
+use App\Services\GeoFlow\AdminLandingService;
 use App\Support\ApiResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Application;
@@ -62,10 +64,15 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin.activity' => LogAdminActivity::class,
         ]);
 
-        // 已登录的管理员访问登录页(guest:admin)时，重定向到后台仪表盘，而不是 Laravel 默认的 "/"。
-        // 默认逻辑只认名为 dashboard/home 的路由，本项目是 admin.dashboard/site.home，匹配不到就回落到 "/"，
-        // 导致“已登录后再打开登录页”被弹到前台内容站。这里显式指向后台首页。
-        $middleware->redirectUsersTo(fn () => route('admin.dashboard'));
+        // 已登录的管理员访问登录页(guest:admin)时，按角色进入可用后台页面。
+        $middleware->redirectUsersTo(function (Request $request): string {
+            /** @var Admin|null $admin */
+            $admin = $request->user('admin');
+
+            return $admin instanceof Admin
+                ? app(AdminLandingService::class)->routeFor($request, $admin)
+                : route('admin.login');
+        });
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->dontFlash(['api_key']);

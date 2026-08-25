@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Enums\ClientProjectMemberRole;
+use App\Enums\PublicationBatchItemStatus;
 use App\Enums\PublicationBatchStatus;
 use App\Models\Admin;
 use App\Models\Article;
@@ -11,6 +12,8 @@ use App\Models\Category;
 use App\Models\Client;
 use App\Models\ClientProject;
 use App\Models\ClientProjectMember;
+use App\Models\PublicationBatchItem;
+use App\Services\GeoFlow\PublicationBatchRecoveryService;
 use App\Services\GeoFlow\PublicationBatchService;
 use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -21,7 +24,7 @@ final class PublicationBatchWorkflowTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_operator_submits_project_batch_and_platform_approver_can_approve_it(): void
+    public function test_operator_submits_project_batch_but_cannot_approve_it(): void
     {
         [$project, $operator, $approver, $article] = $this->projectFixture();
         $service = app(PublicationBatchService::class);
@@ -44,7 +47,7 @@ final class PublicationBatchWorkflowTest extends TestCase
         $service->approve($operator, $submitted);
     }
 
-    public function test_platform_approver_reads_other_operator_batch_but_stale_article_is_rejected(): void
+    public function test_super_admin_rejects_a_stale_operator_batch(): void
     {
         [$project, $operator, $approver, $article] = $this->projectFixture();
         $service = app(PublicationBatchService::class);
@@ -61,7 +64,7 @@ final class PublicationBatchWorkflowTest extends TestCase
         $service->approve($approver, $submitted);
     }
 
-    public function test_platform_approver_can_approve_operator_batch_and_item_readback_is_scoped(): void
+    public function test_super_admin_can_approve_operator_batch_and_item_readback_is_scoped(): void
     {
         [$project, $operator, $approver, $article] = $this->projectFixture();
         $service = app(PublicationBatchService::class);
@@ -77,6 +80,140 @@ final class PublicationBatchWorkflowTest extends TestCase
         $this->assertSame($approver->id, $approved->approved_by_admin_id);
         $this->assertSame('approved', $approved->items->firstOrFail()->status->value);
         $this->assertSame($project->id, $approved->items->firstOrFail()->client_project_id);
+    }
+
+    public function test_legacy_platform_approver_cannot_approve_a_batch_through_the_service(): void
+    {
+        [$project, $operator, , $article] = $this->projectFixture();
+        $legacyApprover = $this->admin('platform_approver');
+        $service = app(PublicationBatchService::class);
+        $batch = $service->createDraft($operator, $project, [[
+            'article_id' => $article->id,
+            'targets' => [['target_type' => 'local']],
+        ]], 'phase-6a2-legacy-approver-denied');
+
+        $this->expectException(DomainException::class);
+        $this->expectExceptionMessage('publication_approver_required');
+        $service->approve($legacyApprover, $service->submit($operator, $batch));
+    }
+
+    public function test_approved_batch_executes_all_of_its_local_items_in_one_action(): void
+    {
+        [$project, $operator, $approver, $firstArticle] = $this->projectFixture();
+        $secondArticle = Article::query()->create([
+            'title' => 'Phase 6A2 Second Article',
+            'slug' => 'phase-6a2-'.Str::random(8),
+            'content' => 'phase 6a2 second content',
+            'excerpt' => 'excerpt',
+            'category_id' => $firstArticle->category_id,
+            'author_id' => $firstArticle->author_id,
+            'client_project_id' => $project->id,
+            'status' => 'draft',
+            'review_status' => 'approved',
+            'central_site_allowed' => true,
+        ]);
+        $service = app(PublicationBatchService::class);
+        $batch = $service->createDraft($operator, $project, [
+            ['article_id' => $firstArticle->id, 'targets' => [['target_type' => 'local']]],
+            ['article_id' => $secondArticle->id, 'targets' => [['target_type' => 'local']]],
+        ], 'phase-6a2-batch-local-execution');
+        $approved = $service->approve($approver, $service->submit($operator, $batch));
+
+        $executed = app(PublicationBatchRecoveryService::class)->executeApprovedLocalItems($approved);
+
+        $this->assertSame(PublicationBatchStatus::COMPLETED, $executed->status);
+        $this->assertSame([
+            PublicationBatchItemStatus::LOCAL_PUBLISHED->value,
+            PublicationBatchItemStatus::LOCAL_PUBLISHED->value,
+        ], $executed->items->sortBy('id')->map(fn ($item): string => $item->status->value)->values()->all());
+        $this->assertDatabaseHas('articles', ['id' => $firstArticle->id, 'status' => 'published']);
+        $this->assertDatabaseHas('articles', ['id' => $secondArticle->id, 'status' => 'published']);
+
+        $retried = app(PublicationBatchRecoveryService::class)->executeApprovedLocalItems($executed);
+
+        $this->assertSame(PublicationBatchStatus::COMPLETED, $retried->status);
+        $this->assertSame(2, $retried->items->where('status', PublicationBatchItemStatus::LOCAL_PUBLISHED)->count());
+    }
+
+    public function test_batch_level_local_execution_leaves_approved_channel_items_untouched(): void
+    {
+        [$project, $operator, $approver, $article] = $this->projectFixture();
+        $service = app(PublicationBatchService::class);
+        $batch = $service->createDraft($operator, $project, [[
+            'article_id' => $article->id,
+            'targets' => [['target_type' => 'local']],
+        ]], 'phase-6a2-local-only-execution');
+        $approved = $service->approve($approver, $service->submit($operator, $batch));
+        $localItem = $approved->items->sole();
+        $channelItem = PublicationBatchItem::query()->create([
+            'publication_batch_id' => $approved->id,
+            'client_project_id' => $project->id,
+            'article_id' => $article->id,
+            'target_type' => 'channel',
+            'target_identity' => 'channel:must-not-execute',
+            'action' => 'publish',
+            'article_revision' => $localItem->article_revision,
+            'article_content_hash' => $localItem->article_content_hash,
+            'target_snapshot' => ['target_type' => 'channel'],
+            'status' => PublicationBatchItemStatus::APPROVED,
+            'idempotency_key' => 'phase-6a2-untouched-channel',
+            'created_by_admin_id' => $operator->id,
+            'updated_by_admin_id' => $operator->id,
+        ]);
+
+        $executed = app(PublicationBatchRecoveryService::class)->executeApprovedLocalItems($approved);
+
+        $this->assertSame(PublicationBatchStatus::PUBLISHING, $executed->status);
+        $this->assertDatabaseHas('publication_batch_items', [
+            'id' => $localItem->id,
+            'status' => PublicationBatchItemStatus::LOCAL_PUBLISHED->value,
+        ]);
+        $this->assertDatabaseHas('publication_batch_items', [
+            'id' => $channelItem->id,
+            'status' => PublicationBatchItemStatus::APPROVED->value,
+        ]);
+        $this->assertDatabaseCount('article_distributions', 0);
+    }
+
+    public function test_batch_level_local_execution_preserves_successes_when_an_item_is_stale(): void
+    {
+        [$project, $operator, $approver, $firstArticle] = $this->projectFixture();
+        $secondArticle = Article::query()->create([
+            'title' => 'Phase 6A2 stale local article',
+            'slug' => 'phase-6a2-'.Str::random(8),
+            'content' => 'phase 6a2 stale original content',
+            'excerpt' => 'excerpt',
+            'category_id' => $firstArticle->category_id,
+            'author_id' => $firstArticle->author_id,
+            'client_project_id' => $project->id,
+            'status' => 'draft',
+            'review_status' => 'approved',
+            'central_site_allowed' => true,
+        ]);
+        $service = app(PublicationBatchService::class);
+        $batch = $service->createDraft($operator, $project, [
+            ['article_id' => $firstArticle->id, 'targets' => [['target_type' => 'local']]],
+            ['article_id' => $secondArticle->id, 'targets' => [['target_type' => 'local']]],
+        ], 'phase-6a2-local-partial-execution');
+        $approved = $service->approve($approver, $service->submit($operator, $batch));
+        $secondArticle->update(['content' => 'phase 6a2 stale changed content']);
+
+        $executed = app(PublicationBatchRecoveryService::class)->executeApprovedLocalItems($approved);
+
+        $this->assertSame(PublicationBatchStatus::PARTIAL, $executed->status);
+        $this->assertDatabaseHas('publication_batch_items', [
+            'publication_batch_id' => $approved->id,
+            'article_id' => $firstArticle->id,
+            'status' => PublicationBatchItemStatus::LOCAL_PUBLISHED->value,
+        ]);
+        $this->assertDatabaseHas('publication_batch_items', [
+            'publication_batch_id' => $approved->id,
+            'article_id' => $secondArticle->id,
+            'status' => PublicationBatchItemStatus::FAILED->value,
+            'failure_code' => 'publication_item_stale',
+        ]);
+        $this->assertDatabaseHas('articles', ['id' => $firstArticle->id, 'status' => 'published']);
+        $this->assertDatabaseHas('articles', ['id' => $secondArticle->id, 'status' => 'draft']);
     }
 
     public function test_operator_cannot_add_an_article_from_another_project(): void
@@ -97,11 +234,10 @@ final class PublicationBatchWorkflowTest extends TestCase
     private function projectFixture(): array
     {
         $operator = $this->admin('operator');
-        $approver = $this->admin('platform_approver');
+        $approver = $this->admin('super_admin');
         $client = Client::create(['name' => 'Phase 6A2 Client', 'slug' => 'phase-6a2-'.Str::random(5)]);
         $project = ClientProject::create(['client_id' => $client->id, 'name' => 'Phase 6A2 Project', 'slug' => 'phase-6a2-'.Str::random(5)]);
         ClientProjectMember::create(['client_project_id' => $project->id, 'admin_id' => $operator->id, 'role' => ClientProjectMemberRole::OPERATOR]);
-        ClientProjectMember::create(['client_project_id' => $project->id, 'admin_id' => $approver->id, 'role' => ClientProjectMemberRole::OPERATOR]);
         $category = Category::create(['name' => 'Phase 6A2 Category', 'slug' => 'phase-6a2-'.Str::random(5)]);
         $author = Author::create(['name' => 'Phase 6A2 Author']);
         $article = Article::create([

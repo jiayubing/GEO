@@ -17,8 +17,11 @@ class PublicationBatchSchemaTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('publication_batches'));
         $this->assertTrue(Schema::hasTable('publication_batch_items'));
-        $this->assertTrue(Schema::hasColumns('publication_batches', ['client_project_id', 'status', 'idempotency_key', 'submitted_by_admin_id', 'approved_by_admin_id']));
+        $this->assertTrue(Schema::hasColumns('publication_batches', ['client_project_id', 'task_id', 'status', 'idempotency_key', 'submitted_by_admin_id', 'approved_by_admin_id']));
         $this->assertTrue(Schema::hasColumns('publication_batch_items', ['publication_batch_id', 'client_project_id', 'article_id', 'target_type', 'target_identity', 'article_content_hash', 'target_snapshot', 'idempotency_key', 'status', 'created_by_admin_id', 'approved_by_admin_id']));
+        $this->assertTrue(Schema::hasIndex('publication_batches', 'publication_batches_approval_queue_index'));
+        $this->assertTrue(Schema::hasIndex('publication_batches', 'publication_batches_project_task_unique'));
+        $this->assertTrue(Schema::hasColumn('tasks', 'created_by_admin_id'));
     }
 
     public function test_status_matrix_distinguishes_terminal_outcomes(): void

@@ -42,7 +42,7 @@
             </section>
 
             <div class="flex items-center justify-end gap-3">
-                <a href="{{ route('admin.dashboard') }}" class="rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50">取消</a>
+                <a href="{{ route('admin.entry') }}" class="rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50">取消</a>
                 <button type="submit" class="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700">创建并进入项目</button>
             </div>
         </form>

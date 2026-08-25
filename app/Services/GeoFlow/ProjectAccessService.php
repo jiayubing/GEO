@@ -19,20 +19,29 @@ final class ProjectAccessService
     /** @return Collection<int, ClientProject> */
     public function accessibleProjects(Admin $admin): Collection
     {
-        $query = ClientProject::query()->where('status', ClientProjectStatus::ACTIVE->value);
-
-        if (! $admin->isSuperAdmin()) {
-            $query->whereHas('members', function ($members) use ($admin): void {
-                $members->where('admin_id', $admin->getKey())
-                    ->where('status', ClientProjectMemberStatus::ACTIVE->value);
-            });
+        if ($admin->isSuperAdmin()) {
+            return collect();
         }
 
-        return $query->orderBy('name')->get();
+        return ClientProject::query()
+            ->where('status', ClientProjectStatus::ACTIVE->value)
+            ->whereHas('members', function ($members) use ($admin): void {
+                $members->where('admin_id', $admin->getKey())
+                    ->where('status', ClientProjectMemberStatus::ACTIVE->value);
+            })
+            ->orderBy('name')
+            ->get();
     }
 
     public function resolveContext(Request $request, Admin $admin): ?ClientProject
     {
+        if ($admin->isSuperAdmin()) {
+            $request->session()->forget(self::SESSION_KEY);
+            $request->attributes->remove('project_context');
+
+            return null;
+        }
+
         $projectId = (int) $request->session()->get(self::SESSION_KEY, 0);
         if ($projectId <= 0) {
             return null;
@@ -52,6 +61,13 @@ final class ProjectAccessService
 
     public function switchContext(Request $request, Admin $admin, int $projectId): ClientProject
     {
+        if ($admin->isSuperAdmin()) {
+            $request->session()->forget(self::SESSION_KEY);
+            $request->attributes->remove('project_context');
+
+            throw new AccessDeniedHttpException('超级管理员使用平台全局上下文，不能切换运营项目');
+        }
+
         $project = ClientProject::query()->whereKey($projectId)->first();
         if (! $project || ! $this->canRead($admin, $project)) {
             throw new AccessDeniedHttpException('项目不存在或当前管理员无权访问');
@@ -85,6 +101,15 @@ final class ProjectAccessService
         $membership = $this->activeMembership($admin, $project);
 
         return $membership !== null && $membership->role !== ClientProjectMemberRole::VIEWER;
+    }
+
+    public function canManageContentAdministration(Admin $admin, ?ClientProject $project): bool
+    {
+        if ($admin->isSuperAdmin() || ! $project instanceof ClientProject) {
+            return true;
+        }
+
+        return $this->activeMembership($admin, $project)?->role !== ClientProjectMemberRole::OPERATOR;
     }
 
     public function requireRead(Admin $admin, ClientProject $project): void

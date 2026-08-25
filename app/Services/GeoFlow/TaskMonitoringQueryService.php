@@ -2,10 +2,11 @@
 
 namespace App\Services\GeoFlow;
 
+use App\Enums\PublicationGate;
+use App\Models\ClientProject;
 use App\Models\Task;
 use App\Models\TaskRun;
 use App\Models\WorkerHeartbeat;
-use App\Models\ClientProject;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -124,6 +125,9 @@ class TaskMonitoringQueryService
 
         // 一次性收集 task_id，后续所有聚合都基于该集合批量查询，避免 N+1。
         $taskIds = $tasks->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $publicationGates = ClientProject::query()
+            ->whereIn('id', $tasks->pluck('client_project_id')->filter()->unique()->all())
+            ->pluck('publication_gate', 'id');
 
         // 文章统计（业务真相）：总文章数 + 已发布数。
         $articleStats = DB::table('articles')
@@ -235,7 +239,7 @@ class TaskMonitoringQueryService
 
         $taskKnowledgeBaseLinks = $this->loadTaskKnowledgeBaseLinks($taskIds, $project);
 
-        return $tasks->map(function (Task $task) use ($articleStats, $distributionStats, $runStats, $latestRuns, $titleNames, $modelNames, $legacyKnowledgeBaseNames, $taskKnowledgeBaseLinks): array {
+        return $tasks->map(function (Task $task) use ($articleStats, $distributionStats, $runStats, $latestRuns, $titleNames, $modelNames, $legacyKnowledgeBaseNames, $taskKnowledgeBaseLinks, $publicationGates): array {
             $taskId = (int) $task->id;
             $articles = $articleStats->get($taskId, ['total_articles' => 0, 'published_articles' => 0, 'draft_articles' => 0, 'publishable_drafts' => 0]);
             $distributions = $distributionStats->get($taskId, ['distribution_total_count' => 0, 'distribution_synced_count' => 0, 'distribution_failed_count' => 0]);
@@ -261,7 +265,8 @@ class TaskMonitoringQueryService
 
             // batch_status 是任务页按钮与状态徽标的关键字段：
             // running > pending > paused(idle) > failed/cancelled > waiting。
-            $batchStatus = $this->resolveBatchStatus($task, $runs, $latestRun, $articles);
+            $usesTaskPublicationBatch = ($publicationGates[(int) $task->client_project_id] ?? null) === PublicationGate::PLATFORM_APPROVAL->value;
+            $batchStatus = $this->resolveBatchStatus($task, $runs, $latestRun, $articles, $usesTaskPublicationBatch);
             // 错误信息优先取最近 run 的 error_message，其次退回 tasks.last_error_message。
             $batchErrorMessage = (string) ($latestRun?->error_message ?: ($task->last_error_message ?? ''));
 
@@ -299,7 +304,7 @@ class TaskMonitoringQueryService
                 'published_count' => (int) ($task->published_count ?? 0),
                 'article_limit' => (int) ($task->article_limit ?? $task->draft_limit ?? 10),
                 'draft_limit' => (int) ($task->draft_limit ?? 10),
-                'publish_interval' => (int) ($task->publish_interval ?? 3600),
+                'publish_interval' => (int) ($task->publish_interval ?? config('geoflow.task_default_draft_generation_interval_seconds', 60)),
                 'batch_status' => $batchStatus,
                 'batch_error_message' => trim($batchErrorMessage),
                 'batch_last_run' => $task->last_run_at?->toDateTimeString(),
@@ -411,7 +416,7 @@ class TaskMonitoringQueryService
     /**
      * @param  array<string,mixed>  $runStats
      */
-    private function resolveBatchStatus(Task $task, array $runStats, ?TaskRun $latestRun, array $articleStats): string
+    private function resolveBatchStatus(Task $task, array $runStats, ?TaskRun $latestRun, array $articleStats, bool $usesTaskPublicationBatch): string
     {
         if ((int) ($runStats['running_jobs'] ?? 0) > 0) {
             return 'running';
@@ -436,7 +441,7 @@ class TaskMonitoringQueryService
         }
 
         if ($publishableDrafts > 0) {
-            return 'waiting_publish';
+            return $usesTaskPublicationBatch ? 'waiting' : 'waiting_publish';
         }
 
         if ($createdCount < $articleLimit && $draftCount >= $draftLimit) {
@@ -491,6 +496,7 @@ class TaskMonitoringQueryService
                 ->all();
         } catch (\Throwable $exception) {
             report($exception);
+
             return [];
         }
     }

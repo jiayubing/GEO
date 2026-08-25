@@ -158,9 +158,6 @@
                             <textarea name="content" rows="18" required class="{{ $textareaClass }}" placeholder="{{ __('admin.knowledge_bases.placeholder_content') }}">{{ old('content', (string) ($knowledgeForm['content'] ?? '')) }}</textarea>
                         </div>
 
-                        <div class="text-xs text-gray-500">
-                            {{ __('admin.knowledge_detail.chunk_count') }}: {{ (int) ($chunkCount ?? 0) }}
-                        </div>
                     </div>
                 </div>
             @else
@@ -297,7 +294,6 @@
                                         ['icon' => 'copy', 'title' => __('admin.knowledge_bases.pipeline_collect'), 'desc' => __('admin.knowledge_bases.pipeline_collect_desc')],
                                         ['icon' => 'sparkles', 'title' => __('admin.knowledge_bases.pipeline_clean'), 'desc' => __('admin.knowledge_bases.pipeline_clean_desc')],
                                         ['icon' => 'scissors', 'title' => __('admin.knowledge_bases.pipeline_merge'), 'desc' => __('admin.knowledge_bases.pipeline_merge_desc')],
-                                        ['icon' => 'network', 'title' => __('admin.knowledge_bases.pipeline_vector'), 'desc' => __('admin.knowledge_bases.pipeline_vector_desc')],
                                     ] as $step)
                                         <div class="flex gap-3">
                                             <div class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-50 text-orange-600">

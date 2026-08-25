@@ -2,8 +2,9 @@
 
 namespace App\Services\GeoFlow;
 
-use App\Jobs\ProcessGeoFlowTaskJob;
 use App\Enums\ClientProjectStatus;
+use App\Enums\PublicationGate;
+use App\Jobs\ProcessGeoFlowTaskJob;
 use App\Models\Task;
 use App\Models\TaskRun;
 use Illuminate\Support\Carbon;
@@ -53,7 +54,7 @@ class JobQueueService
             }
 
             if ($task->next_publish_at === null) {
-                $updates['next_publish_at'] = $now->copy()->addSeconds(max(60, (int) ($task->publish_interval ?? 3600)));
+                $updates['next_publish_at'] = $now->copy()->addSeconds(max(60, (int) ($task->publish_interval ?? config('geoflow.task_default_draft_generation_interval_seconds', 60))));
             }
 
             if ($task->schedule_enabled === null) {
@@ -241,12 +242,14 @@ class JobQueueService
             }
             if (! $this->taskProjectMatches($run->task)) {
                 $run->forceFill(['status' => 'cancelled', 'finished_at' => now(), 'error_message' => '项目已停用，取消执行结果'])->save();
+
                 return false;
             }
             $run->forceFill([
                 'status' => 'completed', 'finished_at' => now(), 'article_id' => $articleId,
                 'duration_ms' => $durationMs, 'meta' => $meta, 'error_message' => '',
             ])->save();
+
             return true;
         });
         if (! $completed) {
@@ -287,9 +290,12 @@ class JobQueueService
             $shouldRetry = $attemptCount < $maxAttempts && $this->taskProjectMatches($run->task);
             $newMeta = array_merge($runMeta, ['attempt_count' => $attemptCount, 'max_attempts' => $maxAttempts, 'last_error' => $errorMessage, 'available_at' => $shouldRetry ? $nextAvailableAt->toDateTimeString() : ($runMeta['available_at'] ?? '')]);
             $run->forceFill(['status' => $shouldRetry ? 'pending' : 'failed', 'error_message' => $errorMessage, 'duration_ms' => $durationMs, 'finished_at' => $shouldRetry ? null : now(), 'meta' => $newMeta])->save();
+
             return true;
         });
-        if (! $updated) return;
+        if (! $updated) {
+            return;
+        }
         $shouldRetry = $nextAvailableAt instanceof Carbon && TaskRun::query()->whereKey($jobId)->value('status') === 'pending';
 
         Task::query()->whereKey($taskId)->update([
@@ -313,11 +319,16 @@ class JobQueueService
     {
         $updated = DB::transaction(function () use ($jobId, $taskId, $reason): bool {
             $run = TaskRun::query()->with('task:id,client_project_id')->whereKey($jobId)->lockForUpdate()->first();
-            if (! $run || (int) $run->task_id !== $taskId || ! in_array($run->status, ['pending', 'running'], true)) return false;
+            if (! $run || (int) $run->task_id !== $taskId || ! in_array($run->status, ['pending', 'running'], true)) {
+                return false;
+            }
             $run->forceFill(['status' => 'cancelled', 'finished_at' => now(), 'error_message' => $reason, 'duration_ms' => 0])->save();
+
             return true;
         });
-        if (! $updated) return;
+        if (! $updated) {
+            return;
+        }
         Task::query()->whereKey($taskId)->update([
             'last_run_at' => now(),
             'last_error_at' => now(),
@@ -637,9 +648,12 @@ class JobQueueService
 
         $task = Task::query()
             ->whereKey($taskId)
-            ->with('clientProject:id,status')
+            ->with('clientProject:id,status,publication_gate')
             ->first(['id', 'status', 'schedule_enabled', 'created_count', 'article_limit', 'draft_limit', 'client_project_id']);
         if (! $task || ! $this->taskIsExecutable($task)) {
+            return;
+        }
+        if ($task->clientProject?->publication_gate === PublicationGate::PLATFORM_APPROVAL) {
             return;
         }
 

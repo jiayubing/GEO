@@ -47,10 +47,11 @@ class TaskController extends BaseApiController
     {
         $project = $this->project($request, true);
         $payload = $request->except('project_id');
+
         return IdempotencyService::executeJson(
             $request,
             'POST /tasks',
-            fn (): JsonResponse => $this->success($request, $tasks->createTask($payload, $project), 201),
+            fn (): JsonResponse => $this->success($request, $tasks->createTask($payload, $project, $this->auth($request)->auditAdminId), 201),
         );
     }
 
@@ -71,10 +72,11 @@ class TaskController extends BaseApiController
     {
         $project = $this->project($request, true);
         $payload = $request->except('project_id');
+
         return IdempotencyService::executeJson(
             $request,
             'PATCH /tasks/{id}',
-            fn (): JsonResponse => $this->success($request, $tasks->updateTask($task, $payload, $project)),
+            fn (): JsonResponse => $this->success($request, $tasks->updateTask($task, $payload, $project, $this->auth($request)->auditAdminId)),
         );
     }
 
@@ -111,10 +113,11 @@ class TaskController extends BaseApiController
     public function stop(Request $request, int $task, TaskLifecycleService $tasks): JsonResponse
     {
         $project = $this->project($request, true);
+
         return IdempotencyService::executeJson(
             $request,
             'POST /tasks/{id}/stop',
-            fn (): JsonResponse => $this->success($request, $tasks->stopTask($task, $project)),
+            fn (): JsonResponse => $this->success($request, $tasks->stopTask($task, $project, $this->auth($request)->auditAdminId)),
         );
     }
 

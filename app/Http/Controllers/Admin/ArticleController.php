@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enums\PublicationGate;
 use App\Exceptions\ArticleRiskGateException;
 use App\Exceptions\PublicationGateException;
 use App\Http\Controllers\Controller;
@@ -22,6 +23,7 @@ use App\Services\GeoFlow\ArticleRiskScanner;
 use App\Services\GeoFlow\ArticleWorkflowTransitionService;
 use App\Services\GeoFlow\DistributionOrchestrator;
 use App\Services\GeoFlow\ProjectAccessService;
+use App\Services\GeoFlow\TaskPublicationBatchService;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\ArticleWorkflow;
 use Illuminate\Database\QueryException;
@@ -47,6 +49,7 @@ class ArticleController extends Controller
         private readonly ArticleRiskScanner $articleRiskScanner,
         private readonly ArticleWorkflowTransitionService $articleWorkflowTransitionService,
         private readonly ProjectAccessService $projectAccess,
+        private readonly TaskPublicationBatchService $taskPublicationBatches,
     ) {}
 
     /**
@@ -54,6 +57,8 @@ class ArticleController extends Controller
      */
     public function index(Request $request): View
     {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof Admin, 401);
         $project = $this->projectContext($request);
         $filters = $this->buildFilters($request);
         $articles = $this->queryArticles($filters, $project);
@@ -76,6 +81,7 @@ class ArticleController extends Controller
             'trashI18n' => $this->trashI18n(),
             'articleBatchRoutes' => $this->articleBatchRoutes($isTrashView),
             'canCreateManualPublication' => $this->canCreateManualPublication($request),
+            'canManageContentAdministration' => $this->projectAccess->canManageContentAdministration($admin, $project),
         ]);
     }
 
@@ -317,6 +323,7 @@ class ArticleController extends Controller
             if ($gateRejection instanceof ArticleRiskGateException) {
                 throw $gateRejection;
             }
+            $this->taskPublicationBatches->recordArticleReviewOutcome((int) $article->getKey(), $adminId);
             if ($article->status === 'published') {
                 $this->distributionOrchestrator->enqueueForArticle($article);
             }
@@ -422,6 +429,8 @@ class ArticleController extends Controller
             ->route('admin.articles.edit', ['articleId' => $articleId])
             ->with('message', __('admin.articles.quality_scorecard.risk_recheck_success'));
 
+        $this->taskPublicationBatches->recordArticleReviewOutcome($articleId, $adminId);
+
         return $downgraded
             ? $response->withErrors(__('admin.articles.quality_scorecard.risk_recheck_downgraded'))
             : $response;
@@ -512,6 +521,7 @@ class ArticleController extends Controller
             if ($gateRejection instanceof ArticleRiskGateException) {
                 throw $gateRejection;
             }
+            $this->taskPublicationBatches->recordArticleReviewOutcome((int) $article->getKey(), $adminId);
             if ($article->status === 'published') {
                 $this->distributionOrchestrator->enqueueForArticle($article);
             }
@@ -1133,6 +1143,9 @@ class ArticleController extends Controller
             if (in_array($reviewStatus, ['approved', 'auto_approved'], true) && ($reviewStatus === 'auto_approved' || $needsReview === 0)) {
                 $desiredStatus = 'published';
             }
+            if ($project?->publication_gate === PublicationGate::PLATFORM_APPROVAL && in_array($reviewStatus, ['approved', 'auto_approved'], true)) {
+                $desiredStatus = 'draft';
+            }
 
             $workflowState = ArticleWorkflow::normalizeState(
                 $desiredStatus,
@@ -1168,6 +1181,7 @@ class ArticleController extends Controller
             if ($workflowState['status'] === 'published') {
                 $this->distributionOrchestrator->enqueueForArticle($article);
             }
+            $this->taskPublicationBatches->recordArticleReviewOutcome((int) $article->getKey(), $adminId);
             $allowedCount++;
         }
 

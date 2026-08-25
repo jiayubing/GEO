@@ -2,6 +2,7 @@
 
 namespace App\Services\GeoFlow;
 
+use App\Enums\PublicationGate;
 use App\Exceptions\ApiException;
 use App\Exceptions\ArticleRiskGateException;
 use App\Exceptions\PublicationGateException;
@@ -14,12 +15,14 @@ use App\Models\ClientProject;
 use App\Models\Task;
 use App\Support\GeoFlow\ArticleWorkflow;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class ArticleGeoFlowService
 {
     public function __construct(
         private readonly ArticleRiskScanner $articleRiskScanner,
         private readonly ArticleWorkflowTransitionService $articleWorkflowTransitionService,
+        private readonly TaskPublicationBatchService $taskPublicationBatches,
     ) {}
 
     public function listArticles(int $page = 1, int $perPage = 20, array $filters = [], ?ClientProject $project = null): array
@@ -140,6 +143,8 @@ class ArticleGeoFlowService
             throw $this->riskBlockedException($article, $creation['gate_rejection']);
         }
 
+        $this->taskPublicationBatches->recordArticleReviewOutcome((int) $article->id, $auditAdminId);
+
         return $this->getArticle((int) $article->id, $project);
     }
 
@@ -232,6 +237,8 @@ class ArticleGeoFlowService
             $this->scopedArticleQuery($project)->whereKey($articleId)->update($normalized);
         }
 
+        $this->taskPublicationBatches->recordArticleReviewOutcome($articleId, $auditAdminId);
+
         return $this->getArticle($articleId, $project);
     }
 
@@ -270,6 +277,9 @@ class ArticleGeoFlowService
             if ($reviewStatus === 'auto_approved' || $taskNeedReview === 0) {
                 $desiredStatus = 'published';
             }
+        }
+        if ($project?->publication_gate === PublicationGate::PLATFORM_APPROVAL && in_array($reviewStatus, ['approved', 'auto_approved'], true)) {
+            $desiredStatus = 'draft';
         }
 
         $workflowState = ArticleWorkflow::normalizeState($desiredStatus, $reviewStatus, $article['published_at'] ?? null);
@@ -335,6 +345,8 @@ class ArticleGeoFlowService
                 ]);
             });
         }
+
+        $this->taskPublicationBatches->recordArticleReviewOutcome($articleId, $auditAdminId);
 
         return $this->getArticle($articleId, $project);
     }
@@ -569,7 +581,7 @@ class ArticleGeoFlowService
         $id = (int) $value;
         $query = $modelClass::query()->whereKey($id);
         $table = (new $modelClass)->getTable();
-        if ($project !== null && \Illuminate\Support\Facades\Schema::hasColumn($table, 'client_project_id')) {
+        if ($project !== null && Schema::hasColumn($table, 'client_project_id')) {
             $query->where('client_project_id', (int) $project->getKey());
         }
         if (! $query->exists()) {

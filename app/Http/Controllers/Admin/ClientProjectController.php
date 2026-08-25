@@ -18,7 +18,7 @@ final class ClientProjectController extends Controller
     public function create(Request $request): View
     {
         $admin = $request->user('admin');
-        abort_unless($admin instanceof Admin && ! $admin->isSuperAdmin(), 403);
+        abort_unless($admin instanceof Admin && $admin->canCreateClientProject(), 403);
 
         return view('admin.client-projects.create');
     }

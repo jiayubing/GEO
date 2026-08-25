@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Admin;
+use App\Services\GeoFlow\AdminLandingService;
 use App\Services\GeoFlow\AnonymousUsageTelemetry;
 use App\Support\AdminActivityLogger;
 use App\Support\AdminWeb;
@@ -22,12 +23,15 @@ class AdminAuthController extends Controller
     public function __construct(
         private readonly AdminLoginLockService $adminLoginLockService,
         private readonly AnonymousUsageTelemetry $anonymousUsageTelemetry,
+        private readonly AdminLandingService $adminLanding,
     ) {}
 
     public function showLoginForm(Request $request): View|RedirectResponse
     {
-        if (Auth::guard('admin')->check()) {
-            return redirect()->route('admin.dashboard');
+        /** @var Admin|null $admin */
+        $admin = Auth::guard('admin')->user();
+        if ($admin instanceof Admin) {
+            return redirect()->to($this->adminLanding->routeFor($request, $admin));
         }
 
         return view('admin.auth.login', [
@@ -84,7 +88,11 @@ class AdminAuthController extends Controller
         ]);
         defer(fn () => $this->anonymousUsageTelemetry->reportAdminLogin($admin, 'web'));
 
-        return redirect()->intended(route('admin.dashboard'));
+        $landing = $this->adminLanding->routeFor($request, $admin);
+
+        return $admin->isSuperAdmin()
+            ? redirect()->intended($landing)
+            : redirect()->to($landing);
     }
 
     private function temporaryLockoutResponse(string $username, string $ipAddress): RedirectResponse

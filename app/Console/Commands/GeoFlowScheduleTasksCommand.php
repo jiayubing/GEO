@@ -2,6 +2,8 @@
 
 namespace App\Console\Commands;
 
+use App\Enums\PublicationGate;
+use App\Models\ClientProject;
 use App\Models\Task;
 use App\Models\TaskRun;
 use App\Services\GeoFlow\JobQueueService;
@@ -42,7 +44,7 @@ class GeoFlowScheduleTasksCommand extends Command
         $skippedCount = 0;
 
         Task::query()
-            ->select(['id', 'name', 'publish_interval', 'draft_limit', 'article_limit', 'created_count', 'next_run_at', 'next_publish_at', 'schedule_enabled'])
+            ->select(['id', 'name', 'publish_interval', 'draft_limit', 'article_limit', 'created_count', 'next_run_at', 'next_publish_at', 'schedule_enabled', 'client_project_id'])
             ->where('status', 'active')
             ->orderBy('id')
             ->chunkById(200, function (Collection $tasks) use ($now, &$queuedCount, &$skippedCount): void {
@@ -95,6 +97,11 @@ class GeoFlowScheduleTasksCommand extends Command
                     'publishable_drafts' => (int) ($row->publishable_drafts ?? 0),
                 ],
             ]);
+        $platformProjectIds = ClientProject::query()
+            ->whereIn('id', $tasks->pluck('client_project_id')->filter()->map(static fn (mixed $id): int => (int) $id))
+            ->where('publication_gate', PublicationGate::PLATFORM_APPROVAL->value)
+            ->pluck('id')
+            ->mapWithKeys(static fn (mixed $id): array => [(int) $id => true]);
 
         foreach ($tasks as $task) {
             $taskId = (int) $task->id;
@@ -111,8 +118,9 @@ class GeoFlowScheduleTasksCommand extends Command
             $draftCount = (int) ($stats['draft_articles'] ?? 0);
             $publishableDrafts = (int) ($stats['publishable_drafts'] ?? 0);
             $nextPublishAt = $task->next_publish_at instanceof Carbon ? $task->next_publish_at : null;
+            $usesTaskPublicationBatch = isset($platformProjectIds[(int) ($task->client_project_id ?? 0)]);
             $canGenerate = $createdCount < $articleLimit && $draftCount < $draftLimit;
-            $canPublishNow = $publishableDrafts > 0 && ($nextPublishAt === null || ! $nextPublishAt->greaterThan($now));
+            $canPublishNow = ! $usesTaskPublicationBatch && $publishableDrafts > 0 && ($nextPublishAt === null || ! $nextPublishAt->greaterThan($now));
 
             if (! $canGenerate && ! $canPublishNow) {
                 if ($publishableDrafts > 0 && $nextPublishAt instanceof Carbon) {
@@ -153,8 +161,11 @@ class GeoFlowScheduleTasksCommand extends Command
                 continue;
             }
 
-            // 生成与发布解耦：调度器保持分钟级扫描，Worker 内部按 next_publish_at 控制发布。
-            $nextRunAt = $now->copy()->addSeconds(60);
+            // Platform-gated tasks use the configured interval to create the
+            // next draft.  They never use the scheduler to publish a draft.
+            $nextRunAt = $usesTaskPublicationBatch
+                ? $now->copy()->addSeconds(max(60, (int) ($task->publish_interval ?? config('geoflow.task_default_draft_generation_interval_seconds', 60))))
+                : $now->copy()->addSeconds(60);
             Task::query()->whereKey($taskId)->update([
                 'next_run_at' => $nextRunAt,
                 'updated_at' => now(),

@@ -44,6 +44,34 @@ final class PublicationBatchRecoveryService
         return $this->execute($batch);
     }
 
+    /**
+     * Execute the approved local items in a reviewed batch without starting
+     * channel or manual targets. The item executor remains the sole owner of
+     * each local publication transition.
+     */
+    public function executeApprovedLocalItems(PublicationBatch $batch): PublicationBatch
+    {
+        DB::transaction(function () use ($batch): void {
+            $locked = PublicationBatch::query()->whereKey($batch->getKey())->lockForUpdate()->firstOrFail();
+            if (! in_array($locked->status, [PublicationBatchStatus::APPROVED, PublicationBatchStatus::PARTIAL, PublicationBatchStatus::PUBLISHING, PublicationBatchStatus::COMPLETED], true)) {
+                throw new \DomainException('publication_batch_not_local_executable');
+            }
+        });
+
+        PublicationBatchItem::query()
+            ->where('publication_batch_id', $batch->getKey())
+            ->where('target_type', PublicationTargetType::LOCAL->value)
+            ->where('status', PublicationBatchItemStatus::APPROVED->value)
+            ->orderBy('id')
+            ->chunkById(100, function ($items): void {
+                foreach ($items as $item) {
+                    $this->local->execute($item);
+                }
+            });
+
+        return $this->aggregate($batch);
+    }
+
     /** Read back observations owned by channel/manual systems and reconcile local restarts. */
     public function readback(PublicationBatch $batch): PublicationBatch
     {

@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Admin;
 
+use App\Models\Admin;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -11,9 +12,7 @@ final class CreateClientProjectRequest extends FormRequest
     {
         $admin = $this->user('admin');
 
-        return $admin !== null
-            && ! $admin->isSuperAdmin()
-            && in_array(strtolower((string) $admin->role), ['admin', 'operator'], true);
+        return $admin instanceof Admin && $admin->canCreateClientProject();
     }
 
     public function rules(): array

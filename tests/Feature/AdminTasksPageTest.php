@@ -70,6 +70,16 @@ class AdminTasksPageTest extends TestCase
             ->assertSee(__('admin.task_create.page_heading'));
     }
 
+    public function test_new_task_defaults_to_one_minute_draft_generation_interval(): void
+    {
+        $task = Task::query()->create([
+            'name' => 'One minute by default',
+            'status' => 'paused',
+        ]);
+
+        $this->assertSame(60, (int) $task->fresh()->publish_interval);
+    }
+
     public function test_task_create_and_edit_forms_use_full_admin_content_width(): void
     {
         $admin = Admin::query()->create([

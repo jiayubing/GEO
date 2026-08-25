@@ -2,9 +2,10 @@
 
 namespace App\Http\Middleware;
 
-use App\Models\Admin;
 use App\Enums\ClientProjectMemberRole;
 use App\Enums\ClientProjectMemberStatus;
+use App\Models\Admin;
+use App\Services\GeoFlow\AdminLandingService;
 use App\Services\GeoFlow\ProjectAccessService;
 use Closure;
 use Illuminate\Http\Request;
@@ -12,7 +13,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 final class EnsureProjectScopedSurface
 {
-    public function __construct(private ProjectAccessService $access) {}
+    public function __construct(
+        private readonly ProjectAccessService $access,
+        private readonly AdminLandingService $adminLanding,
+    ) {}
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -22,7 +26,18 @@ final class EnsureProjectScopedSurface
             abort(401);
         }
 
+        if (! $admin->isSuperAdmin() && $request->routeIs('admin.dashboard')) {
+            return redirect()->to($this->adminLanding->routeFor($request, $admin));
+        }
+
         $project = $this->access->resolveContext($request, $admin);
+
+        // The project-scoped batch list predates the platform approval center.
+        // Super administrators do not hold an operating-project context, so send
+        // the legacy read entry point to the global queue before enforcing that boundary.
+        if ($admin->isSuperAdmin() && $request->routeIs('admin.publication-batches.index')) {
+            return redirect()->route('admin.publication-batch-approvals.index');
+        }
 
         // 文章与任务整组入口已完成项目查询/写入隔离，可在有效项目上下文下开放给 operator。
         // 素材、分析和其他后台页面仍保留超级管理员闸门，直到各自完成项目化。

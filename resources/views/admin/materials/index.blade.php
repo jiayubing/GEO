@@ -3,25 +3,6 @@
 @section('content')
     @php
         $knowledgeBases = (int) ($stats['knowledge_bases'] ?? 0);
-        $knowledgeChunks = (int) ($stats['knowledge_chunks'] ?? 0);
-        $vectorizedChunks = (int) ($stats['vectorized_chunks'] ?? 0);
-        $unvectorizedChunks = (int) ($stats['unvectorized_chunks'] ?? 0);
-        $activeEmbeddingModels = (int) ($stats['active_embedding_models'] ?? 0);
-        $vectorProgress = $knowledgeChunks > 0 ? min(100, (int) round(($vectorizedChunks / max(1, $knowledgeChunks)) * 100)) : 0;
-        $knowledgeHealth = $knowledgeBases <= 0
-            ? 'empty'
-            : ($activeEmbeddingModels <= 0 ? 'no_embedding' : ($unvectorizedChunks > 0 ? 'needs_vectorization' : 'ready'));
-        $knowledgeHealthStyles = [
-            'ready' => 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-            'needs_vectorization' => 'bg-amber-50 text-amber-700 ring-amber-200',
-            'no_embedding' => 'bg-red-50 text-red-700 ring-red-200',
-            'empty' => 'bg-slate-100 text-slate-700 ring-slate-200',
-        ];
-        $strategyLabels = [
-            'rule' => __('admin.materials.chunk_strategy_rule'),
-            'auto' => __('admin.materials.chunk_strategy_auto'),
-            'semantic_llm' => __('admin.materials.chunk_strategy_semantic_llm'),
-        ];
         $foundationCards = [
             [
                 'title' => __('admin.materials.keyword_manage_title'),
@@ -94,13 +75,6 @@
                 'icon' => 'triangle-alert',
                 'tone' => ((int) ($stats['high_risk_pending_count'] ?? 0) > 0 ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-700'),
             ],
-            [
-                'title' => __('admin.materials.evidence_vector_title'),
-                'desc' => __('admin.materials.evidence_vector_desc'),
-                'value' => $vectorizedChunks.' / '.$knowledgeChunks,
-                'icon' => 'database-zap',
-                'tone' => 'bg-orange-50 text-orange-600',
-            ],
         ];
     @endphp
 
@@ -118,7 +92,7 @@
                             <i data-lucide="brain" class="mr-2 h-4 w-4"></i>
                             {{ __('admin.materials.knowledge_hub_label') }}
                         </span>
-                        <div class="grid w-full grid-cols-1 gap-3 sm:w-auto sm:grid-cols-2 lg:grid-cols-4 lg:min-w-[760px]">
+                        <div class="grid w-full grid-cols-1 gap-3 sm:w-auto sm:grid-cols-2 lg:grid-cols-3 lg:min-w-[580px]">
                             <a href="{{ route('admin.knowledge-bases.create') }}" class="inline-flex items-center justify-center whitespace-nowrap rounded-md bg-orange-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-orange-700">
                                 <i data-lucide="plus" class="mr-2 h-4 w-4"></i>
                                 {{ __('admin.materials.knowledge_hub_create') }}
@@ -131,10 +105,6 @@
                                 <i data-lucide="database" class="mr-2 h-4 w-4"></i>
                                 {{ __('admin.materials.manage_knowledge_bases') }}
                             </a>
-                            <a href="{{ route('admin.ai-models.index') }}" class="inline-flex items-center justify-center whitespace-nowrap rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-                                <i data-lucide="settings" class="mr-2 h-4 w-4"></i>
-                                {{ __('admin.materials.knowledge_hub_vector_config') }}
-                            </a>
                         </div>
                     </div>
                     <div>
@@ -146,18 +116,10 @@
 
             <div class="grid grid-cols-1 divide-y divide-gray-200 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)] lg:divide-x lg:divide-y-0">
                 <div class="px-6 py-6 lg:px-8">
-                    <div class="grid grid-cols-2 gap-x-8 gap-y-6 lg:grid-cols-4">
+                    <div class="grid grid-cols-2 gap-x-8 gap-y-6">
                         <div>
                             <div class="text-sm font-medium text-gray-500">{{ __('admin.materials.knowledge_base_count') }}</div>
                             <div class="mt-2 text-3xl font-bold text-gray-900">{{ $knowledgeBases }}</div>
-                        </div>
-                        <div>
-                            <div class="text-sm font-medium text-gray-500">{{ __('admin.materials.knowledge_hub_chunks') }}</div>
-                            <div class="mt-2 text-3xl font-bold text-gray-900">{{ $knowledgeChunks }}</div>
-                        </div>
-                        <div>
-                            <div class="text-sm font-medium text-gray-500">{{ __('admin.materials.knowledge_hub_vectorized') }}</div>
-                            <div class="mt-2 text-3xl font-bold text-emerald-700">{{ $vectorizedChunks }}</div>
                         </div>
                         <div>
                             <div class="text-sm font-medium text-gray-500">{{ __('admin.materials.knowledge_hub_used_by_tasks') }}</div>
@@ -165,23 +127,10 @@
                         </div>
                     </div>
 
-                    <div class="mt-7">
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="font-medium text-gray-700">{{ __('admin.materials.knowledge_hub_vector_progress') }}</span>
-                            <span class="font-semibold text-gray-900">{{ $vectorizedChunks }} / {{ $knowledgeChunks }}</span>
-                        </div>
-                        <div class="mt-2 h-2 overflow-hidden rounded-full bg-gray-100">
-                            <div class="h-2 rounded-full bg-orange-500" style="width: {{ $vectorProgress }}%"></div>
-                        </div>
-                    </div>
-
-                    <div class="mt-7 grid grid-cols-1 gap-4 border-t border-gray-100 pt-6 md:grid-cols-3 xl:grid-cols-6">
+                    <div class="mt-7 grid grid-cols-1 gap-4 border-t border-gray-100 pt-6 md:grid-cols-3">
                         @foreach ([
                             ['icon' => 'file-input', 'title' => __('admin.materials.knowledge_flow_ingest'), 'desc' => __('admin.materials.knowledge_flow_ingest_desc')],
                             ['icon' => 'fingerprint', 'title' => __('admin.materials.knowledge_flow_evidence'), 'desc' => __('admin.materials.knowledge_flow_evidence_desc')],
-                            ['icon' => 'scissors', 'title' => __('admin.materials.knowledge_flow_chunk'), 'desc' => __('admin.materials.knowledge_flow_chunk_desc')],
-                            ['icon' => 'scan-search', 'title' => __('admin.materials.knowledge_flow_vector'), 'desc' => __('admin.materials.knowledge_flow_vector_desc')],
-                            ['icon' => 'search-check', 'title' => __('admin.materials.knowledge_flow_recall'), 'desc' => __('admin.materials.knowledge_flow_recall_desc')],
                             ['icon' => 'wand-sparkles', 'title' => __('admin.materials.knowledge_flow_generate'), 'desc' => __('admin.materials.knowledge_flow_generate_desc')],
                         ] as $step)
                             <div class="min-w-0">
@@ -217,24 +166,7 @@
                 </div>
 
                 <div class="flex flex-col px-6 py-6 lg:min-h-full lg:px-8">
-                    <div class="inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ring-1 {{ $knowledgeHealthStyles[$knowledgeHealth] ?? $knowledgeHealthStyles['empty'] }}">
-                        <i data-lucide="activity" class="mr-2 h-4 w-4"></i>
-                        {{ __('admin.materials.knowledge_health_'.$knowledgeHealth) }}
-                    </div>
-
-                    <dl class="mt-6 space-y-4 text-sm lg:space-y-5">
-                        <div class="flex items-start justify-between gap-4">
-                            <dt class="text-gray-500">{{ __('admin.materials.knowledge_hub_embedding_model') }}</dt>
-                            <dd class="max-w-[220px] text-right font-semibold text-gray-900">{{ (string) ($stats['default_embedding_model'] ?? '') !== '' ? (string) $stats['default_embedding_model'] : __('admin.materials.knowledge_hub_embedding_missing') }}</dd>
-                        </div>
-                        <div class="flex items-start justify-between gap-4">
-                            <dt class="text-gray-500">{{ __('admin.materials.knowledge_hub_chunk_strategy') }}</dt>
-                            <dd class="text-right font-semibold text-gray-900">{{ $strategyLabels[(string) ($stats['chunk_strategy'] ?? 'rule')] ?? $strategyLabels['rule'] }}</dd>
-                        </div>
-                        <div class="flex items-start justify-between gap-4">
-                            <dt class="text-gray-500">{{ __('admin.materials.knowledge_hub_retrieval_mode') }}</dt>
-                            <dd class="text-right font-semibold text-gray-900">{{ __('admin.materials.knowledge_hub_retrieval_hybrid') }}</dd>
-                        </div>
+                    <dl class="space-y-4 text-sm lg:space-y-5">
                         <div class="flex items-start justify-between gap-4">
                             <dt class="text-gray-500">{{ __('admin.materials.knowledge_hub_metadata_ready') }}</dt>
                             <dd class="text-right font-semibold text-gray-900">{{ (int) ($stats['metadata_ready_count'] ?? 0) }} / {{ $knowledgeBases }}</dd>
@@ -248,20 +180,12 @@
                             <dd class="text-right font-semibold {{ (int) ($stats['high_risk_pending_count'] ?? 0) > 0 ? 'text-red-700' : 'text-gray-900' }}">{{ (int) ($stats['high_risk_pending_count'] ?? 0) }}</dd>
                         </div>
                         <div class="flex items-start justify-between gap-4">
-                            <dt class="text-gray-500">{{ __('admin.materials.knowledge_hub_unvectorized') }}</dt>
-                            <dd class="text-right font-semibold {{ $unvectorizedChunks > 0 ? 'text-amber-700' : 'text-gray-900' }}">{{ $unvectorizedChunks }}</dd>
-                        </div>
-                        <div class="flex items-start justify-between gap-4">
                             <dt class="text-gray-500">{{ __('admin.materials.knowledge_hub_latest_update') }}</dt>
                             <dd class="text-right font-semibold text-gray-900">{{ (string) ($stats['latest_knowledge_updated_at'] ?? '') !== '' ? (string) $stats['latest_knowledge_updated_at'] : __('admin.materials.knowledge_hub_never_updated') }}</dd>
                         </div>
                     </dl>
 
                     <div class="mt-6 grid grid-cols-1 gap-3 border-t border-gray-100 pt-6 lg:mt-auto">
-                        <a href="{{ route('admin.knowledge-bases.index') }}" class="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-                            <i data-lucide="refresh-cw" class="mr-2 h-4 w-4"></i>
-                            {{ __('admin.materials.knowledge_hub_refresh_chunks') }}
-                        </a>
                         @if ($canManageProtectedWorkflows)
                         <a href="{{ route('admin.url-import') }}" class="inline-flex items-center justify-center rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100">
                             <i data-lucide="globe" class="mr-2 h-4 w-4"></i>

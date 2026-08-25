@@ -28,6 +28,9 @@
     $trashUrl = route('admin.articles.index', ['trashed' => 1]);
     $articlesIndexUrl = route('admin.articles.index');
     $clearTaskFilterUrl = route('admin.articles.index', request()->except(['task_id', 'page']));
+    $isSuperAdmin = auth('admin')->user()?->isSuperAdmin() === true;
+    $canManageManualContent = (bool) ($canManageContentAdministration ?? false);
+    $canUseArticleBatchActions = ! $isTrashView || $canManageManualContent;
     $contentWorkbenchItems = [
         [
             'icon' => 'shield-check',
@@ -59,7 +62,9 @@
             'countClass' => 'text-emerald-700',
             'linkClass' => 'text-emerald-700 group-hover:text-emerald-800',
         ],
-        [
+    ];
+    if ($isSuperAdmin) {
+        $contentWorkbenchItems[] = [
             'icon' => 'chart-no-axes-combined',
             'title' => __('admin.articles.workbench.observation_title'),
             'desc' => __('admin.articles.workbench.observation_desc'),
@@ -68,8 +73,8 @@
             'iconClass' => 'bg-purple-50 text-purple-600 ring-purple-100',
             'countClass' => 'text-purple-700',
             'linkClass' => 'text-purple-700 group-hover:text-purple-800',
-        ],
-    ];
+        ];
+    }
     $workbenchPriority = collect($contentWorkbenchItems)
         ->sortByDesc(fn ($item) => (int) ($item['count'] ?? 0))
         ->first();
@@ -89,43 +94,53 @@
                         <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>
                         {{ __('admin.articles.trash.back') }}
                     </a>
-                    <button type="button" onclick="submitEmptyTrash()" class="inline-flex items-center px-4 py-2 border border-red-200 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50">
-                        <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>
-                        {{ __('admin.articles.trash.empty') }}
-                    </button>
+                    @if($canManageManualContent)
+                        <button type="button" onclick="submitEmptyTrash()" class="inline-flex items-center px-4 py-2 border border-red-200 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50">
+                            <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>
+                            {{ __('admin.articles.trash.empty') }}
+                        </button>
+                    @endif
                 @else
-                    <a href="{{ route('admin.articles.create') }}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
-                        <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
-                        {{ __('admin.button.create_article') }}
-                    </a>
-                    <a href="{{ route('admin.manual-publications.index') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-                        <i data-lucide="send" class="w-4 h-4 mr-2"></i>
-                        {{ __('admin.manual_publications.nav') }}
-                    </a>
+                    @if($canManageManualContent)
+                        <a href="{{ route('admin.articles.create') }}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
+                            <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
+                            {{ __('admin.button.create_article') }}
+                        </a>
+                        <a href="{{ route('admin.manual-publications.index') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                            <i data-lucide="send" class="w-4 h-4 mr-2"></i>
+                            {{ __('admin.manual_publications.nav') }}
+                        </a>
+                    @endif
                     <a href="{{ route('admin.publication-batches.index') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                         批次列表
                     </a>
-                    <a href="{{ route('admin.publication-batches.create') }}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-emerald-600 hover:bg-emerald-700">
-                        <i data-lucide="layers" class="w-4 h-4 mr-2"></i>
-                        新建批次
-                    </a>
-                    <a href="{{ $categoryManageUrl }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-                        <i data-lucide="folder" class="w-4 h-4 mr-2"></i>
-                        {{ __('admin.button.category_manage') }}
-                    </a>
+                    @if($canManageManualContent)
+                        <a href="{{ route('admin.publication-batches.create') }}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-emerald-600 hover:bg-emerald-700">
+                            <i data-lucide="layers" class="w-4 h-4 mr-2"></i>
+                            新建批次
+                        </a>
+                        <a href="{{ $categoryManageUrl }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                            <i data-lucide="folder" class="w-4 h-4 mr-2"></i>
+                            {{ __('admin.button.category_manage') }}
+                        </a>
+                    @endif
                     <a href="{{ $reviewCenterUrl }}" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
                         <i data-lucide="eye" class="w-4 h-4 mr-1"></i>
                         {{ __('admin.button.review_center') }}
                     </a>
                 @endif
-                <a href="{{ $isTrashView ? $articlesIndexUrl : $trashUrl }}" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
-                    <i data-lucide="trash-2" class="w-4 h-4 mr-1"></i>
-                    {{ $isTrashView ? __('admin.articles.page_title') : __('admin.button.trash') }}
-                </a>
-                <button type="button" onclick="toggleBatchActions()" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
-                    <i data-lucide="check-square" class="w-4 h-4 mr-1"></i>
-                    {{ __('admin.button.bulk_actions') }}
-                </button>
+                @if($canManageManualContent)
+                    <a href="{{ $isTrashView ? $articlesIndexUrl : $trashUrl }}" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
+                        <i data-lucide="trash-2" class="w-4 h-4 mr-1"></i>
+                        {{ $isTrashView ? __('admin.articles.page_title') : __('admin.button.trash') }}
+                    </a>
+                @endif
+                @if($canUseArticleBatchActions)
+                    <button type="button" onclick="toggleBatchActions()" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
+                        <i data-lucide="check-square" class="w-4 h-4 mr-1"></i>
+                        {{ __('admin.button.bulk_actions') }}
+                    </button>
+                @endif
             </div>
         </div>
 
@@ -406,23 +421,29 @@
                     </h3>
                     <div class="flex flex-wrap gap-2">
                         @if(!$isTrashView)
-                        <a href="{{ route('admin.articles.create') }}" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
-                            <i data-lucide="plus" class="w-4 h-4 mr-1"></i>
-                            {{ __('admin.button.create_article') }}
-                        </a>
+                        @if($canManageManualContent)
+                            <a href="{{ route('admin.articles.create') }}" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
+                                <i data-lucide="plus" class="w-4 h-4 mr-1"></i>
+                                {{ __('admin.button.create_article') }}
+                            </a>
+                        @endif
                         <a href="{{ $reviewCenterUrl }}" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
                             <i data-lucide="eye" class="w-4 h-4 mr-1"></i>
                             {{ __('admin.button.review_center') }}
                         </a>
                         @endif
-                        <a href="{{ $isTrashView ? $articlesIndexUrl : $trashUrl }}" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
-                            <i data-lucide="trash-2" class="w-4 h-4 mr-1"></i>
-                            {{ $isTrashView ? __('admin.articles.page_title') : __('admin.button.trash') }}
-                        </a>
-                        <button type="button" onclick="toggleBatchActions()" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
-                            <i data-lucide="check-square" class="w-4 h-4 mr-1"></i>
-                            {{ __('admin.button.bulk_actions') }}
-                        </button>
+                        @if($canManageManualContent)
+                            <a href="{{ $isTrashView ? $articlesIndexUrl : $trashUrl }}" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
+                                <i data-lucide="trash-2" class="w-4 h-4 mr-1"></i>
+                                {{ $isTrashView ? __('admin.articles.page_title') : __('admin.button.trash') }}
+                            </a>
+                        @endif
+                        @if($canUseArticleBatchActions)
+                            <button type="button" onclick="toggleBatchActions()" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
+                                <i data-lucide="check-square" class="w-4 h-4 mr-1"></i>
+                                {{ __('admin.button.bulk_actions') }}
+                            </button>
+                        @endif
                     </div>
                 </div>
             </div>
@@ -445,6 +466,7 @@
                     @endif
                 </div>
             @else
+                @if($canUseArticleBatchActions)
                 <div id="batch-actions" class="hidden px-6 py-3 bg-gray-50 border-b border-gray-200">
                     <form method="POST" action="{{ \App\Support\AdminWeb::routePath('admin.articles.batch.update-status') }}" id="batch-form">
                         @csrf
@@ -463,17 +485,23 @@
                                     <option value="batch_restore">{{ __('admin.articles.trash.action_restore') }}</option>
                                     <option value="batch_force_delete">{{ __('admin.articles.trash.action_force_delete') }}</option>
                                 @else
-                                    <option value="batch_update_status">{{ __('admin.articles.bulk.status_to') }}</option>
+                                    @if($canManageManualContent)
+                                        <option value="batch_update_status">{{ __('admin.articles.bulk.status_to') }}</option>
+                                    @endif
                                     <option value="batch_update_review">{{ __('admin.articles.bulk.review_to') }}</option>
-                                    <option value="delete_articles">{{ __('admin.articles.bulk.delete') }}</option>
+                                    @if($canManageManualContent)
+                                        <option value="delete_articles">{{ __('admin.articles.bulk.delete') }}</option>
+                                    @endif
                                 @endif
                             </select>
-                            @if(!$isTrashView)
+                            @if(!$isTrashView && $canManageManualContent)
                             <select name="new_status" id="status-select" class="hidden border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm">
                                 <option value="draft">{{ __('admin.articles.status.draft') }}</option>
                                 <option value="published">{{ __('admin.articles.status.published') }}</option>
                                 <option value="private">{{ __('admin.articles.status.private') }}</option>
                             </select>
+                            @endif
+                            @if(!$isTrashView)
                             <select name="review_status" id="review-select" class="hidden border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm">
                                 <option value="pending">{{ __('admin.articles.review.pending') }}</option>
                                 <option value="approved">{{ __('admin.articles.review.approved') }}</option>
@@ -490,14 +518,17 @@
                         </div>
                     </form>
                 </div>
+                @endif
 
                 <div class="overflow-x-auto">
                     <table class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                         <tr>
-                            <th class="batch-checkbox hidden px-6 py-3 text-left">
-                                <input type="checkbox" id="select-all" class="rounded border-gray-300 text-blue-600 shadow-sm">
-                            </th>
+                            @if($canUseArticleBatchActions)
+                                <th class="batch-checkbox hidden px-6 py-3 text-left">
+                                    <input type="checkbox" id="select-all" class="rounded border-gray-300 text-blue-600 shadow-sm">
+                                </th>
+                            @endif
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.articles.column.id') }}</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.articles.column.info') }}</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{{ __('admin.articles.column.task_author') }}</th>
@@ -610,9 +641,11 @@
                                 }
                             @endphp
                             <tr class="hover:bg-gray-50">
-                                <td class="batch-checkbox hidden px-6 py-4">
-                                    <input type="checkbox" value="{{ (int) $article->id }}" class="article-checkbox rounded border-gray-300 text-blue-600 shadow-sm">
-                                </td>
+                                @if($canUseArticleBatchActions)
+                                    <td class="batch-checkbox hidden px-6 py-4">
+                                        <input type="checkbox" value="{{ (int) $article->id }}" class="article-checkbox rounded border-gray-300 text-blue-600 shadow-sm">
+                                    </td>
+                                @endif
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-mono">#{{ (int) $article->id }}</td>
                                 <td class="px-6 py-4">
                                     <div class="text-sm font-medium text-gray-900 truncate">
@@ -699,20 +732,22 @@
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                     @if($isTrashView)
-                                        <div class="flex items-center space-x-2">
-                                            <form method="POST" action="{{ route('admin.articles.restore', ['articleId' => (int) $article->id]) }}" class="inline" onsubmit="return confirm(@json(__('admin.articles.trash.confirm_restore')))">
-                                                @csrf
-                                                <button type="submit" class="text-green-600 hover:text-green-800" title="{{ __('admin.articles.trash.action_restore') }}">
-                                                    <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
-                                                </button>
-                                            </form>
-                                            <form method="POST" action="{{ route('admin.articles.force-delete', ['articleId' => (int) $article->id]) }}" class="inline" onsubmit="return confirm(@json(__('admin.articles.trash.confirm_delete')))">
-                                                @csrf
-                                                <button type="submit" class="text-red-600 hover:text-red-800" title="{{ __('admin.articles.trash.action_force_delete') }}">
-                                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
-                                                </button>
-                                            </form>
-                                        </div>
+                                        @if($canManageManualContent)
+                                            <div class="flex items-center space-x-2">
+                                                <form method="POST" action="{{ route('admin.articles.restore', ['articleId' => (int) $article->id]) }}" class="inline" onsubmit="return confirm(@json(__('admin.articles.trash.confirm_restore')))">
+                                                    @csrf
+                                                    <button type="submit" class="text-green-600 hover:text-green-800" title="{{ __('admin.articles.trash.action_restore') }}">
+                                                        <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                                                    </button>
+                                                </form>
+                                                <form method="POST" action="{{ route('admin.articles.force-delete', ['articleId' => (int) $article->id]) }}" class="inline" onsubmit="return confirm(@json(__('admin.articles.trash.confirm_delete')))">
+                                                    @csrf
+                                                    <button type="submit" class="text-red-600 hover:text-red-800" title="{{ __('admin.articles.trash.action_force_delete') }}">
+                                                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                                    </button>
+                                                </form>
+                                            </div>
+                                        @endif
                                     @else
                                         <div class="flex items-center space-x-2">
                                             @if($primaryPublishedLink !== null)
@@ -727,7 +762,7 @@
                                             <a href="{{ route('admin.articles.edit', ['articleId' => (int) $article->id]) }}" class="text-green-600 hover:text-green-800" title="{{ __('admin.button.edit') }}">
                                                 <i data-lucide="edit" class="w-4 h-4"></i>
                                             </a>
-                                            @if($canCreateManualPublication && in_array((string) $article->review_status, ['approved', 'auto_approved'], true))
+                                            @if($canManageManualContent && $canCreateManualPublication && in_array((string) $article->review_status, ['approved', 'auto_approved'], true))
                                                 <a href="{{ route('admin.manual-publications.create', ['article_id' => (int) $article->id]) }}" class="text-purple-600 hover:text-purple-800" title="{{ __('admin.manual_publications.article_action') }}">
                                                     <i data-lucide="send" class="w-4 h-4"></i>
                                                 </a>
@@ -740,9 +775,11 @@
                                                     <i data-lucide="x" class="w-4 h-4"></i>
                                                 </button>
                                             @endif
-                                            <button type="button" onclick="deleteArticle({{ (int) $article->id }})" class="text-red-600 hover:text-red-800" title="{{ __('admin.button.delete') }}">
-                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
-                                            </button>
+                                            @if($canManageManualContent)
+                                                <button type="button" onclick="deleteArticle({{ (int) $article->id }})" class="text-red-600 hover:text-red-800" title="{{ __('admin.button.delete') }}">
+                                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                                </button>
+                                            @endif
                                         </div>
                                     @endif
                                 </td>

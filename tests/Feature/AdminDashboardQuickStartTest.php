@@ -44,13 +44,12 @@ class AdminDashboardQuickStartTest extends TestCase
             ->assertSee(__('admin.dashboard.automation.node_content_title'))
             ->assertSee(__('admin.dashboard.automation.node_authority_distribution_title'))
             ->assertSee(__('admin.dashboard.automation.step_label', ['step' => '01']))
-            ->assertSee(__('admin.dashboard.automation.step_label', ['step' => '08']))
+            ->assertSee(__('admin.dashboard.automation.step_label', ['step' => '07']))
             ->assertSee('id="content-engineering-step-01"', false)
-            ->assertSee('id="content-engineering-step-08"', false)
+            ->assertSee('id="content-engineering-step-07"', false)
             ->assertSeeInOrder([
                 __('admin.dashboard.automation.node_prompt_graph_title'),
                 __('admin.dashboard.automation.node_knowledge_assets_title'),
-                __('admin.dashboard.automation.node_evidence_structure_title'),
                 __('admin.dashboard.automation.node_engineering_task_title'),
                 __('admin.dashboard.automation.node_content_title'),
                 __('admin.dashboard.automation.node_quality_gate_title'),
@@ -119,7 +118,9 @@ class AdminDashboardQuickStartTest extends TestCase
         $this->assertGreaterThanOrEqual(1, substr_count($html, route('admin.image-libraries.index')));
         $this->assertGreaterThanOrEqual(1, substr_count($html, route('admin.authors.index')));
         $this->assertStringContainsString(__('admin.dashboard.automation.metric_materials', ['count' => 0]), $html);
-        $this->assertStringContainsString(__('admin.dashboard.automation.metric_vectorized', ['done' => 0, 'total' => 0]), $html);
+        $this->assertStringNotContainsString(__('admin.dashboard.automation.metric_vectorized', ['done' => 0, 'total' => 0]), $html);
+        $this->assertStringNotContainsString(__('admin.dashboard.automation.metric_unvectorized', ['count' => 0]), $html);
+        $this->assertStringNotContainsString(__('admin.dashboard.automation.action_refresh_chunks'), $html);
         $this->assertStringContainsString(__('admin.dashboard.automation.metric_ai_today', ['count' => 0]), $html);
         $this->assertStringContainsString(__('admin.dashboard.automation.running_badge', ['count' => 0]), $html);
         $this->assertStringContainsString(__('admin.dashboard.automation.attention_badge', ['count' => 0]), $html);
