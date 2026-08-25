@@ -2,6 +2,7 @@
 
 namespace App\Services\GeoFlow;
 
+use App\Enums\ClientProjectStatus;
 use App\Enums\PublicationBatchItemStatus;
 use App\Enums\PublicationBatchStatus;
 use App\Models\Admin;
@@ -9,6 +10,7 @@ use App\Models\Article;
 use App\Models\ClientProject;
 use App\Models\PublicationBatch;
 use App\Models\PublicationBatchItem;
+use App\Models\Task;
 use App\Support\AdminActivityLogger;
 use App\Support\GeoFlow\PublicationGateContract;
 use DomainException;
@@ -79,6 +81,101 @@ final class PublicationBatchService
             $this->replaceItems($locked, $admin, $project, $selections);
 
             return $locked->load('items');
+        });
+    }
+
+    /**
+     * Add or refresh one approved article in the single draft owned by a task.
+     *
+     * @param  array<int,array<string,mixed>|string>  $targets
+     */
+    public function syncTaskDraftArticle(Admin $admin, ClientProject $project, Task $task, Article $article, array $targets): PublicationBatch
+    {
+        $this->access->requireWrite($admin, $project, true);
+
+        return DB::transaction(function () use ($admin, $project, $task, $article, $targets): PublicationBatch {
+            $lockedTask = Task::query()
+                ->whereKey($task->getKey())
+                ->where('client_project_id', $project->getKey())
+                ->lockForUpdate()
+                ->first();
+            $lockedArticle = Article::query()
+                ->whereKey($article->getKey())
+                ->where('task_id', $task->getKey())
+                ->where('client_project_id', $project->getKey())
+                ->whereNull('deleted_at')
+                ->lockForUpdate()
+                ->first();
+            if (! $lockedTask instanceof Task || ! $lockedArticle instanceof Article) {
+                throw new DomainException('publication_task_article_mismatch');
+            }
+            if ($targets === []) {
+                throw new DomainException('publication_targets_required');
+            }
+
+            $batch = PublicationBatch::query()
+                ->where('client_project_id', $project->getKey())
+                ->where('task_id', $lockedTask->getKey())
+                ->lockForUpdate()
+                ->first();
+            if (! $batch instanceof PublicationBatch) {
+                $batch = PublicationBatch::query()->create([
+                    'client_project_id' => $project->getKey(),
+                    'task_id' => $lockedTask->getKey(),
+                    'status' => PublicationBatchStatus::DRAFT,
+                    'idempotency_key' => 'task-publication-v1:'.$lockedTask->getKey(),
+                    'created_by_admin_id' => $admin->getKey(),
+                    'updated_by_admin_id' => $admin->getKey(),
+                    'status_changed_at' => now(),
+                ]);
+                AdminActivityLogger::log($admin, 'publication_batch.task_created', [
+                    'target_type' => 'publication_batch',
+                    'target_id' => $batch->getKey(),
+                    'details' => ['project_id' => $project->getKey(), 'task_id' => $lockedTask->getKey()],
+                ]);
+            }
+            if ($batch->status !== PublicationBatchStatus::DRAFT) {
+                throw new DomainException('publication_task_batch_finalized');
+            }
+
+            $batch->items()->where('article_id', $lockedArticle->getKey())->delete();
+            $batch->forceFill(['updated_by_admin_id' => $admin->getKey()])->save();
+            $this->replaceItems($batch, $admin, $project, [[
+                'article_id' => $lockedArticle->getKey(),
+                'targets' => $targets,
+            ]]);
+
+            return $batch->load('items');
+        });
+    }
+
+    public function removeTaskDraftArticle(Admin $admin, ClientProject $project, Task $task, Article $article): void
+    {
+        $this->access->requireWrite($admin, $project, true);
+
+        DB::transaction(function () use ($admin, $project, $task, $article): void {
+            $lockedTask = Task::query()
+                ->whereKey($task->getKey())
+                ->where('client_project_id', $project->getKey())
+                ->lockForUpdate()
+                ->first();
+            if (! $lockedTask instanceof Task) {
+                throw new DomainException('publication_task_article_mismatch');
+            }
+            $batch = PublicationBatch::query()
+                ->where('client_project_id', $project->getKey())
+                ->where('task_id', $lockedTask->getKey())
+                ->lockForUpdate()
+                ->first();
+            if (! $batch instanceof PublicationBatch) {
+                return;
+            }
+            if ($batch->status !== PublicationBatchStatus::DRAFT) {
+                throw new DomainException('publication_task_batch_finalized');
+            }
+
+            $batch->items()->where('article_id', $article->getKey())->delete();
+            $batch->forceFill(['updated_by_admin_id' => $admin->getKey()])->save();
         });
     }
 
@@ -224,12 +321,11 @@ final class PublicationBatchService
 
     private function requireApprover(Admin $admin, ClientProject $project, PublicationBatch $batch): void
     {
-        $this->access->requireRead($admin, $project);
-        if (! $admin->isSuperAdmin() && strtolower((string) $admin->role) !== 'platform_approver') {
+        if (! $admin->isSuperAdmin()) {
             throw new DomainException('publication_approver_required');
         }
-        if (! $admin->isSuperAdmin() && (int) $batch->created_by_admin_id === (int) $admin->getKey()) {
-            throw new DomainException('publication_self_approval_forbidden');
+        if ($project->status !== ClientProjectStatus::ACTIVE) {
+            throw new DomainException('publication_project_inactive');
         }
     }
 

@@ -2,7 +2,6 @@
 
 namespace Tests\Unit;
 
-use App\Enums\ClientProjectMemberRole;
 use App\Enums\ClientProjectMemberStatus;
 use App\Enums\ClientProjectStatus;
 use App\Models\Admin;
@@ -65,6 +64,23 @@ class ProjectAccessServiceTest extends TestCase
         $this->assertTrue($service->canWrite($admin, $project, true));
         $this->expectException(AccessDeniedHttpException::class);
         $service->requireSingleTarget([$project->id, $this->project('two')->id]);
+    }
+
+    public function test_super_admin_cannot_list_resolve_or_switch_operational_project_context(): void
+    {
+        $admin = $this->admin('super_admin');
+        $project = $this->project('platform-context');
+        $request = Request::create('/');
+        $request->setLaravelSession(app('session')->driver());
+        $request->session()->put(ProjectAccessService::SESSION_KEY, $project->id);
+        $service = app(ProjectAccessService::class);
+
+        $this->assertTrue($service->accessibleProjects($admin)->isEmpty());
+        $this->assertNull($service->resolveContext($request, $admin));
+        $this->assertFalse($request->session()->has(ProjectAccessService::SESSION_KEY));
+
+        $this->expectException(AccessDeniedHttpException::class);
+        $service->switchContext($request, $admin, (int) $project->id);
     }
 
     private function project(string $slug): ClientProject

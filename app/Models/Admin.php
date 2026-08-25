@@ -87,6 +87,12 @@ class Admin extends Authenticatable
         return $this->isSuperAdmin();
     }
 
+    public function canCreateClientProject(): bool
+    {
+        return ! $this->isSuperAdmin()
+            && in_array(strtolower((string) $this->role), ['admin', 'operator'], true);
+    }
+
     public function revokeAuthenticationCredentials(): void
     {
         DB::transaction(function (): void {

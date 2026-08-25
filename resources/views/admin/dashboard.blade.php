@@ -98,16 +98,12 @@
         $pendingJobs = (int) ($tasks['pending_jobs'] ?? $stats['pending_jobs'] ?? 0);
         $failedJobs = (int) ($tasks['failed_jobs'] ?? $stats['failed_jobs'] ?? 0);
         $chatModels = (int) ($ai['chat_models'] ?? 0);
-        $embeddingModels = (int) ($ai['embedding_models'] ?? 0);
         $aiUsedToday = (int) ($ai['used_today'] ?? 0);
         $materialLibraryCount = (int) ($materials['keyword_libraries'] ?? 0)
             + (int) ($materials['title_libraries'] ?? 0)
             + (int) ($materials['knowledge_bases'] ?? 0)
             + (int) ($materials['image_libraries'] ?? 0)
             + (int) ($materials['authors'] ?? 0);
-        $knowledgeChunks = (int) ($materials['knowledge_chunks'] ?? 0);
-        $vectorizedChunks = (int) ($materials['vectorized_chunks'] ?? 0);
-        $unvectorizedChunks = (int) ($materials['unvectorized_chunks'] ?? 0);
         $totalPrompts = (int) ($stats['total_prompts'] ?? 0);
         $bodyPrompts = (int) ($stats['body_prompts'] ?? 0);
         $specialPrompts = (int) ($stats['special_prompts'] ?? 0);
@@ -123,7 +119,7 @@
         $aiBotCount = (int) ($todayStats['today_ai_bot_views'] ?? 0);
         $riskCount = $failedJobs + $distributionFailed + $urlImportFailed;
 
-        $materialsStatus = $unvectorizedChunks > 0 ? 'warning' : ($materialLibraryCount > 0 ? 'ready' : 'available');
+        $materialsStatus = $materialLibraryCount > 0 ? 'ready' : 'available';
         $promptStatus = $totalPrompts > 0 ? 'ready' : 'warning';
         $taskStatus = $failedJobs > 0 ? 'error' : (($runningJobs + $pendingJobs) > 0 ? 'running' : ($activeTasks > 0 ? 'ready' : 'available'));
         $contentLibraryStatus = $pendingReview > 0 ? 'warning' : ($totalArticles > 0 ? 'ready' : 'available');
@@ -134,7 +130,6 @@
             + (int) ((int) ($distribution['sending'] ?? 0) > 0)
             + (int) ($todayArticles > 0);
         $attentionBadgeCount = (int) ($failedJobs > 0)
-            + (int) ($unvectorizedChunks > 0)
             + (int) ($pendingReview > 0)
             + (int) ($distributionFailed > 0)
             + (int) ($urlImportFailed > 0);
@@ -163,25 +158,8 @@
                 'status' => $materialsStatus,
                 'metrics' => [
                     __('admin.dashboard.automation.metric_materials', ['count' => $materialLibraryCount]),
-                    __('admin.dashboard.automation.metric_vectorized', ['done' => $vectorizedChunks, 'total' => $knowledgeChunks]),
                 ],
                 'actions' => [
-                    ['label' => __('admin.dashboard.automation.action_refresh_chunks'), 'href' => route('admin.knowledge-bases.index'), 'primary' => false, 'warning' => true],
-                    ['label' => __('admin.dashboard.automation.action_view'), 'href' => route('admin.materials.index'), 'primary' => false],
-                ],
-            ],
-            [
-                'title' => __('admin.dashboard.automation.node_evidence_structure_title'),
-                'desc' => __('admin.dashboard.automation.node_evidence_structure_desc'),
-                'icon' => 'blocks',
-                'tone' => 'amber',
-                'status' => $materialsStatus,
-                'metrics' => [
-                    __('admin.dashboard.automation.metric_vectorized', ['done' => $vectorizedChunks, 'total' => $knowledgeChunks]),
-                    __('admin.dashboard.automation.metric_unvectorized', ['count' => $unvectorizedChunks]),
-                ],
-                'actions' => [
-                    ['label' => __('admin.dashboard.automation.action_refresh_chunks'), 'href' => route('admin.knowledge-bases.index'), 'primary' => false, 'warning' => true],
                     ['label' => __('admin.dashboard.automation.action_view'), 'href' => route('admin.materials.index'), 'primary' => false],
                 ],
             ],
@@ -278,17 +256,6 @@
                 'buttonStyle' => 'border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100',
             ],
             [
-                'title' => __('admin.dashboard.automation.rec_chunks_title'),
-                'desc' => __('admin.dashboard.automation.rec_chunks_desc'),
-                'count' => $unvectorizedChunks,
-                'icon' => 'database-zap',
-                'style' => 'border-amber-200 bg-amber-50',
-                'badge' => 'warning',
-                'href' => route('admin.knowledge-bases.index'),
-                'button' => __('admin.dashboard.automation.action_refresh_chunks'),
-                'buttonStyle' => 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50',
-            ],
-            [
                 'title' => __('admin.dashboard.automation.rec_review_title'),
                 'desc' => __('admin.dashboard.automation.rec_review_desc'),
                 'count' => $pendingReview,
@@ -341,7 +308,7 @@
                 'title' => __('admin.dashboard.automation.lane_single_title'),
                 'desc' => __('admin.dashboard.automation.lane_single_desc'),
                 'rows' => [
-                    ['title' => __('admin.dashboard.navigation.ai_config_title'), 'desc' => __('admin.dashboard.automation.lane_ai_desc'), 'href' => route('admin.ai-models.index'), 'icon' => 'cpu', 'count' => $chatModels + $embeddingModels],
+                    ['title' => __('admin.dashboard.navigation.ai_config_title'), 'desc' => __('admin.dashboard.automation.lane_ai_desc'), 'href' => route('admin.ai-models.index'), 'icon' => 'cpu', 'count' => $chatModels],
                     ['title' => __('admin.dashboard.navigation.materials_title'), 'desc' => __('admin.dashboard.automation.lane_material_desc'), 'href' => route('admin.materials.index'), 'icon' => 'database', 'count' => $materialLibraryCount],
                     ['title' => __('admin.dashboard.navigation.create_task_title'), 'desc' => __('admin.dashboard.navigation.create_task_desc'), 'href' => route('admin.tasks.create'), 'icon' => 'plus-circle', 'count' => $totalTasks],
                     ['title' => __('admin.dashboard.navigation.articles_title'), 'desc' => __('admin.dashboard.automation.lane_articles_desc'), 'href' => route('admin.articles.index'), 'icon' => 'file-text', 'count' => $totalArticles],

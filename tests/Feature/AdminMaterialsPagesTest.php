@@ -98,13 +98,14 @@ class AdminMaterialsPagesTest extends TestCase
             ->assertOk()
             ->assertSee(__('admin.materials.page_title'))
             ->assertSee(__('admin.materials.knowledge_hub_label'))
-            ->assertSee(__('admin.materials.knowledge_hub_vector_progress'))
+            ->assertDontSee(__('admin.materials.knowledge_hub_vector_progress'))
             ->assertSee(__('admin.materials.evidence_layer_title'))
             ->assertSeeInOrder([
                 __('admin.materials.knowledge_hub_create'),
                 __('admin.materials.manage_knowledge_bases'),
-                __('admin.materials.knowledge_hub_vector_config'),
             ])
+            ->assertDontSee(__('admin.materials.knowledge_hub_vector_config'))
+            ->assertDontSee(route('admin.ai-models.index'), false)
             ->assertSee(__('admin.materials.foundation_title'))
             ->assertSee(__('admin.materials.author_manage_title'))
             ->assertDontSee(__('admin.materials.url_import'))
@@ -743,7 +744,7 @@ class AdminMaterialsPagesTest extends TestCase
         $this->actingAs($admin, 'admin')
             ->get(route('admin.knowledge-bases.index'))
             ->assertOk()
-            ->assertSee(__('admin.knowledge_bases.refresh_chunks'));
+            ->assertDontSee(__('admin.knowledge_bases.refresh_chunks'));
 
         $this->actingAs($admin, 'admin')
             ->post(route('admin.knowledge-bases.chunks.refresh', ['knowledgeBaseId' => (int) $knowledgeBase->id]))
@@ -756,7 +757,7 @@ class AdminMaterialsPagesTest extends TestCase
         $this->assertSame([0.1, 0.2, 0.3], json_decode((string) $chunk->embedding_json, true));
     }
 
-    public function test_knowledge_base_list_uses_friendly_refresh_chunks_progress_ui(): void
+    public function test_knowledge_base_list_hides_vectorization_controls(): void
     {
         $admin = Admin::query()->create([
             'username' => 'knowledge_refresh_ui_admin',
@@ -793,12 +794,12 @@ class AdminMaterialsPagesTest extends TestCase
         $this->actingAs($admin, 'admin')
             ->get(route('admin.knowledge-bases.index'))
             ->assertOk()
-            ->assertSee('data-knowledge-refresh-modal', false)
-            ->assertSee('data-refresh-chunks-form', false)
-            ->assertSee('data-refresh-progress', false)
-            ->assertSee(__('admin.knowledge_bases.refresh_confirm_title'))
-            ->assertSee(__('admin.knowledge_bases.refresh_progress_initial'))
-            ->assertDontSee(__('admin.knowledge_bases.confirm_refresh_chunks', ['name' => '待更新切片知识库']));
+            ->assertDontSee('data-knowledge-refresh-modal', false)
+            ->assertDontSee('data-refresh-chunks-form', false)
+            ->assertDontSee('data-refresh-progress', false)
+            ->assertDontSee(__('admin.knowledge_bases.refresh_confirm_title'))
+            ->assertDontSee(__('admin.knowledge_bases.refresh_progress_initial'))
+            ->assertDontSee(__('admin.knowledge_bases.vectorized_summary', ['vectorized' => 0, 'chunks' => 0]));
     }
 
     public function test_refresh_knowledge_chunks_is_queued_without_blocking_the_request(): void
@@ -1485,7 +1486,12 @@ class AdminMaterialsPagesTest extends TestCase
         $this->actingAs($admin, 'admin')
             ->get(route('admin.knowledge-bases.detail', ['knowledgeBaseId' => (int) $knowledgeBase->id]))
             ->assertOk()
-            ->assertSee(__('admin.knowledge_detail.heading'));
+            ->assertSee(__('admin.knowledge_detail.heading'))
+            ->assertSee(__('admin.common.related_tasks'))
+            ->assertDontSee('id="chunk-preview"', false)
+            ->assertDontSee(__('admin.knowledge_detail.resubmit_chunks'))
+            ->assertDontSee(__('admin.knowledge_detail.chunk_preview_title'))
+            ->assertDontSee(__('admin.knowledge_detail.vectorized_count'));
     }
 
     public function test_admin_can_manage_keyword_and_title_details(): void

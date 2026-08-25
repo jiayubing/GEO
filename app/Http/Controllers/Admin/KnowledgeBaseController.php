@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\AiModel;
 use App\Models\KnowledgeBase;
+use App\Models\ClientProject;
 use App\Models\KnowledgeChunk;
 use App\Models\Task;
 use App\Services\GeoFlow\KnowledgeChunkSyncCoordinator;
+use App\Services\GeoFlow\ProjectResourceResolver;
 use App\Support\AdminWeb;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\RedirectResponse;
@@ -32,7 +34,17 @@ class KnowledgeBaseController extends Controller
 
     private const MAX_DOCX_COMPRESSION_RATIO = 100;
 
-    public function __construct(private readonly KnowledgeChunkSyncCoordinator $chunkSyncCoordinator) {}
+    public function __construct(private readonly KnowledgeChunkSyncCoordinator $chunkSyncCoordinator, private readonly ProjectResourceResolver $projectResources) {}
+
+    private function currentProject(): ?ClientProject { return request()->attributes->get('project_context'); }
+    private function knowledgeBase(int $id): KnowledgeBase
+    {
+        if ($project = $this->currentProject()) {
+            /** @var KnowledgeBase $knowledgeBase */
+            return $this->projectResources->requireOwned(KnowledgeBase::class, $id, $project);
+        }
+        return KnowledgeBase::query()->whereKey($id)->firstOrFail();
+    }
 
     /**
      * 列表页。
@@ -69,7 +81,7 @@ class KnowledgeBaseController extends Controller
      */
     public function detail(int $knowledgeBaseId): View|RedirectResponse
     {
-        $knowledgeBase = KnowledgeBase::query()->whereKey($knowledgeBaseId)->firstOrFail();
+        $knowledgeBase = $this->knowledgeBase($knowledgeBaseId);
 
         return view('admin.knowledge-bases.detail', [
             'pageTitle' => __('admin.knowledge_detail.page_title'),
@@ -87,7 +99,7 @@ class KnowledgeBaseController extends Controller
      */
     public function updateFromDetail(Request $request, int $knowledgeBaseId): RedirectResponse
     {
-        $knowledgeBase = KnowledgeBase::query()->whereKey($knowledgeBaseId)->firstOrFail();
+        $knowledgeBase = $this->knowledgeBase($knowledgeBaseId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -138,7 +150,7 @@ class KnowledgeBaseController extends Controller
      */
     public function edit(int $knowledgeBaseId): View|RedirectResponse
     {
-        $knowledgeBase = KnowledgeBase::query()->whereKey($knowledgeBaseId)->firstOrFail();
+        $knowledgeBase = $this->knowledgeBase($knowledgeBaseId);
 
         return view('admin.knowledge-bases.form', [
             'pageTitle' => __('admin.knowledge_bases.page_title'),
@@ -168,7 +180,7 @@ class KnowledgeBaseController extends Controller
      */
     public function update(Request $request, int $knowledgeBaseId): RedirectResponse
     {
-        $knowledgeBase = KnowledgeBase::query()->whereKey($knowledgeBaseId)->firstOrFail();
+        $knowledgeBase = $this->knowledgeBase($knowledgeBaseId);
 
         $payload = $this->validateKnowledgeForm($request);
         $content = trim((string) $payload['content']);
@@ -194,7 +206,7 @@ class KnowledgeBaseController extends Controller
      */
     public function destroy(int $knowledgeBaseId): RedirectResponse
     {
-        $knowledgeBase = KnowledgeBase::query()->whereKey($knowledgeBaseId)->firstOrFail();
+        $knowledgeBase = $this->knowledgeBase($knowledgeBaseId);
 
         $taskCount = $this->knowledgeBaseTaskCount($knowledgeBaseId);
         if ($taskCount > 0) {
@@ -210,7 +222,7 @@ class KnowledgeBaseController extends Controller
 
     public function refreshChunks(Request $request, int $knowledgeBaseId): RedirectResponse
     {
-        $knowledgeBase = KnowledgeBase::query()->whereKey($knowledgeBaseId)->firstOrFail();
+        $knowledgeBase = $this->knowledgeBase($knowledgeBaseId);
         $content = trim((string) ($knowledgeBase->content ?? ''));
         $redirect = $this->knowledgeChunkRefreshRedirect($request);
 
@@ -266,6 +278,9 @@ class KnowledgeBaseController extends Controller
                     ->where('embedding_dimensions', '>', 0),
             ])
             ->orderByDesc('created_at');
+        if ($project = $this->currentProject()) {
+            $query->where('client_project_id', $project->id);
+        }
 
         return $query->get()->map(static function (KnowledgeBase $knowledgeBase): array {
             return [
@@ -302,11 +317,13 @@ class KnowledgeBaseController extends Controller
      */
     private function loadStats(): array
     {
+        $query = KnowledgeBase::query();
+        if ($project = $this->currentProject()) { $query->where('client_project_id', $project->id); }
         return [
-            'total_knowledge' => KnowledgeBase::query()->count(),
-            'total_words' => (int) (KnowledgeBase::query()->sum('word_count') ?? 0),
-            'markdown_count' => KnowledgeBase::query()->where('file_type', 'markdown')->count(),
-            'word_count' => KnowledgeBase::query()->where('file_type', 'word')->count(),
+            'total_knowledge' => (clone $query)->count(),
+            'total_words' => (int) (clone $query)->sum('word_count'),
+            'markdown_count' => (clone $query)->where('file_type', 'markdown')->count(),
+            'word_count' => (clone $query)->where('file_type', 'word')->count(),
         ];
     }
 
@@ -472,7 +489,8 @@ class KnowledgeBaseController extends Controller
             );
             $encodedFilePath = $this->encodeKnowledgeFilePaths($storedPaths);
 
-            $knowledgeBase = DB::transaction(function () use ($knowledgeName, $payload, $content, $fileType, $encodedFilePath): KnowledgeBase {
+            $projectId = $this->currentProject()?->id;
+            $knowledgeBase = DB::transaction(function () use ($knowledgeName, $payload, $content, $fileType, $encodedFilePath, $projectId): KnowledgeBase {
                 return KnowledgeBase::query()->create([
                     'name' => $knowledgeName,
                     'description' => trim((string) ($payload['description'] ?? '')),
@@ -483,6 +501,7 @@ class KnowledgeBaseController extends Controller
                     'usage_count' => 0,
                     'used_task_count' => 0,
                     'file_path' => $encodedFilePath,
+                    ...($projectId ? ['client_project_id' => $projectId] : []),
                 ] + $this->knowledgeMetadataPayload($payload));
             });
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Exceptions\DistributionTaskRevisionMismatch;
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
 use App\Models\AiModel;
 use App\Models\Author;
 use App\Models\Category;
@@ -15,10 +16,12 @@ use App\Models\Prompt;
 use App\Models\Task;
 use App\Models\TitleLibrary;
 use App\Services\GeoFlow\DistributionOrchestrator;
+use App\Services\GeoFlow\ProjectAccessService;
+use App\Services\GeoFlow\ProjectOperationalAlertService;
+use App\Services\GeoFlow\ProjectOperationsReportService;
 use App\Services\GeoFlow\TaskDistributionChannelSelector;
 use App\Services\GeoFlow\TaskLifecycleService;
 use App\Services\GeoFlow\TaskMonitoringQueryService;
-use App\Services\GeoFlow\ProjectAccessService;
 use App\Support\AdminWeb;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -44,6 +47,8 @@ class TaskController extends Controller
         private readonly TaskMonitoringQueryService $taskMonitoringQueryService,
         private readonly DistributionOrchestrator $distributionOrchestrator,
         private readonly ProjectAccessService $projectAccess,
+        private readonly ProjectOperationsReportService $projectOperationsReport,
+        private readonly ProjectOperationalAlertService $projectAlerts,
     ) {}
 
     /**
@@ -103,7 +108,7 @@ class TaskController extends Controller
             $project = $this->projectContext($request, true);
             $currentStatus = (string) $request->input('status', 'paused');
             if ($currentStatus === 'active') {
-                $this->taskLifecycleService->stopTask($taskId, $project);
+                $this->taskLifecycleService->stopTask($taskId, $project, $this->adminId($request));
 
                 return back()->with('message', __('admin.tasks.message.paused_stopped'));
             }
@@ -174,9 +179,10 @@ class TaskController extends Controller
         $project = $this->projectContext($request, true);
 
         try {
-            DB::transaction(function () use ($taskData, $channelIds, $project): void {
+            $adminId = $this->adminId($request);
+            DB::transaction(function () use ($taskData, $channelIds, $project, $adminId): void {
                 $this->distributionOrchestrator->lockTaskChannelSelection(null, $channelIds);
-                $createdTask = $this->taskLifecycleService->createTask($taskData, $project);
+                $createdTask = $this->taskLifecycleService->createTask($taskData, $project, $adminId);
                 $createdTaskId = (int) ($createdTask['id'] ?? 0);
                 if ($createdTaskId) {
                     $this->distributionOrchestrator->syncTaskChannels(
@@ -234,7 +240,7 @@ class TaskController extends Controller
                 'status' => (string) $taskModel->status,
                 'article_limit' => (string) ($task['article_limit'] ?? 10),
                 'draft_limit' => (string) ($task['draft_limit'] ?? 10),
-                'publish_interval' => (string) max(1, (int) (($task['publish_interval'] ?? 3600) / 60)),
+                'publish_interval' => (string) max(1, (int) ceil(((int) ($task['publish_interval'] ?? config('geoflow.task_default_draft_generation_interval_seconds', 60))) / 60)),
                 'category_mode' => (string) ($task['category_mode'] ?? 'smart'),
                 'model_selection_mode' => (string) ($task['model_selection_mode'] ?? 'fixed'),
                 'need_review' => (int) ($task['need_review'] ?? 0),
@@ -267,10 +273,11 @@ class TaskController extends Controller
         $taskRevision = (string) $payload['task_revision'];
 
         try {
-            DB::transaction(function () use ($taskId, $taskData, $channelIds, $taskRevision, $project): void {
+            $adminId = $this->adminId($request);
+            DB::transaction(function () use ($taskId, $taskData, $channelIds, $taskRevision, $project, $adminId): void {
                 $this->distributionOrchestrator->lockTaskChannelSelection($taskId, $channelIds);
                 $this->distributionOrchestrator->assertTaskRevision($taskId, $taskRevision);
-                $this->taskLifecycleService->updateTask($taskId, $taskData, $project);
+                $this->taskLifecycleService->updateTask($taskId, $taskData, $project, $adminId);
                 $task = Task::query()->whereKey($taskId)->firstOrFail();
                 $this->distributionOrchestrator->syncTaskChannels($task, $channelIds);
             });
@@ -293,10 +300,11 @@ class TaskController extends Controller
     public function healthCheck(Request $request): JsonResponse
     {
         try {
+            $project = $this->projectContext($request);
             $overview = $this->taskMonitoringQueryService->buildAdminOverview(
                 max(1, $request->integer('page', 1)),
                 50,
-                $this->projectContext($request),
+                $project,
             );
 
             return response()->json([
@@ -307,6 +315,8 @@ class TaskController extends Controller
                 'recent_runs' => $overview['recent_runs'],
                 'pagination' => $overview['pagination'],
                 'task_summary' => $overview['task_summary'],
+                'project_report' => $project instanceof ClientProject ? $this->projectOperationsReport->projectSummary($project) : null,
+                'project_alerts' => $project instanceof ClientProject ? $this->projectAlerts->open($project) : [],
             ]);
         } catch (Throwable $e) {
             return response()->json([
@@ -332,7 +342,7 @@ class TaskController extends Controller
             $project = $this->projectContext($request, true);
             $result = $payload['action'] === 'start'
                 ? $this->taskLifecycleService->startTask($taskId, true, $project)
-                : $this->taskLifecycleService->stopTask($taskId, $project);
+                : $this->taskLifecycleService->stopTask($taskId, $project, $this->adminId($request));
 
             return response()->json([
                 'success' => true,
@@ -358,10 +368,10 @@ class TaskController extends Controller
     private function projectContext(Request $request, bool $write = false): ?ClientProject
     {
         $admin = $request->user('admin');
-        abort_unless($admin instanceof \App\Models\Admin, 401);
+        abort_unless($admin instanceof Admin, 401);
         $project = $request->attributes->get('project_context')
             ?: $this->projectAccess->resolveContext($request, $admin);
-        if ($write && ! $project instanceof ClientProject) {
+        if ($write && ! $project instanceof ClientProject && strtolower((string) $admin->role) === 'operator') {
             abort(403, 'project_target_required');
         }
         if ($project instanceof ClientProject) {
@@ -369,7 +379,16 @@ class TaskController extends Controller
                 ? $this->projectAccess->requireWrite($admin, $project)
                 : $this->projectAccess->requireRead($admin, $project);
         }
+
         return $project instanceof ClientProject ? $project : null;
+    }
+
+    private function adminId(Request $request): int
+    {
+        $admin = $request->user('admin');
+        abort_unless($admin instanceof Admin, 401);
+
+        return (int) $admin->getKey();
     }
 
     /**
@@ -559,7 +578,7 @@ class TaskController extends Controller
         if ($project instanceof ClientProject) {
             $distributionChannelsQuery->whereHas('clientProjects', function ($projects) use ($project): void {
                 $projects->whereKey($project->id)
-                    ->wherePivot('status', 'active');
+                    ->where('client_project_distribution_channels.status', 'active');
             });
         }
         $distributionChannels = $distributionChannelsQuery->get()
@@ -660,7 +679,7 @@ class TaskController extends Controller
             'distribution_strategy' => (string) ($payload['distribution_strategy'] ?? TaskDistributionChannelSelector::STRATEGY_BROADCAST),
             'article_limit' => (int) ($payload['article_limit'] ?? 10),
             'draft_limit' => (int) ($payload['draft_limit'] ?? 10),
-            'publish_interval' => max(1, (int) ($payload['publish_interval'] ?? 60)) * 60,
+            'publish_interval' => max(1, (int) ($payload['publish_interval'] ?? max(1, (int) ceil(((int) config('geoflow.task_default_draft_generation_interval_seconds', 60)) / 60)))) * 60,
             'need_review' => $request->boolean('need_review') ? 1 : 0,
             'is_loop' => $request->boolean('is_loop') ? 1 : 0,
             'category_mode' => $categoryMode,

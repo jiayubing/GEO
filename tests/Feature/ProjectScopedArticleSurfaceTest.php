@@ -130,11 +130,31 @@ class ProjectScopedArticleSurfaceTest extends TestCase
             ->assertSee('#'.$visible->id)
             ->assertSee('待审核')
             ->assertDontSee('#'.$draft->id)
+            ->assertDontSee('href="'.route('admin.publication-batches.create').'"', false)
             ->assertDontSee(route('admin.publication-batches.show', ['batchId' => $draft->id]))
             ->assertDontSee(route('admin.publication-batches.show', ['batchId' => $hidden->id]));
     }
 
-    public function test_admin_can_read_and_switch_project_context_from_backend_header_api(): void
+    public function test_regular_admin_does_not_see_batch_decision_controls(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('batch-controls');
+        $batch = PublicationBatch::query()->create([
+            'client_project_id' => $project->id,
+            'status' => PublicationBatchStatus::SUBMITTED,
+            'idempotency_key' => 'batch-controls-submitted',
+            'created_by_admin_id' => $admin->id,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->get(route('admin.publication-batches.show', ['batchId' => $batch->id]))
+            ->assertOk()
+            ->assertDontSee('批准')
+            ->assertDontSee('退回')
+            ->assertDontSee('拒绝');
+    }
+
+    public function test_super_admin_header_api_stays_in_platform_context_and_rejects_switching(): void
     {
         $admin = Admin::query()->create([
             'username' => 'context-api-admin',
@@ -147,20 +167,146 @@ class ProjectScopedArticleSurfaceTest extends TestCase
         $project = $this->project('context-api');
 
         $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
             ->get(route('admin.project-context.show'))
             ->assertOk()
             ->assertJsonPath('current_project_id', null)
-            ->assertJsonPath('projects.0.id', $project->id);
+            ->assertJsonPath('context_mode', 'platform')
+            ->assertJsonCount(0, 'projects');
+
+        $this->assertFalse($this->app['session.store']->has(ProjectAccessService::SESSION_KEY));
+
+        $this->actingAs($admin, 'admin')
+            ->postJson(route('admin.project-context.switch'), ['project_id' => $project->id])
+            ->assertForbidden();
+    }
+
+    public function test_operator_header_api_lists_only_active_membership_projects_and_can_switch(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('context-api-operator');
+        $other = $this->project('context-api-other');
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.project-context.show'))
+            ->assertOk()
+            ->assertJsonPath('current_project_id', null)
+            ->assertJsonPath('context_mode', 'project')
+            ->assertJsonCount(1, 'projects')
+            ->assertJsonPath('projects.0.id', $project->id)
+            ->assertJsonMissing(['id' => $other->id]);
 
         $this->actingAs($admin, 'admin')
             ->postJson(route('admin.project-context.switch'), ['project_id' => $project->id])
             ->assertOk()
             ->assertJsonPath('current_project_id', $project->id);
 
-        $this->assertSame(
-            $project->id,
-            $this->app['session.store']->get(ProjectAccessService::SESSION_KEY),
-        );
+        $this->assertSame($project->id, $this->app['session.store']->get(ProjectAccessService::SESSION_KEY));
+    }
+
+    public function test_super_admin_header_renders_platform_context_without_project_switcher(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'platform-header-admin',
+            'password' => 'secret-123',
+            'email' => 'platform-header-admin@example.com',
+            'display_name' => 'Platform Header Admin',
+            'role' => 'super_admin',
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.dashboard'))
+            ->assertOk()
+            ->assertSee(__('admin.project_context.platform_global'))
+            ->assertDontSee('id="admin-project-context"', false);
+    }
+
+    public function test_operator_header_keeps_project_switcher(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('project-header');
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->get(route('admin.articles.index'))
+            ->assertOk()
+            ->assertSee('id="admin-project-context"', false)
+            ->assertDontSee(__('admin.project_context.platform_global'));
+    }
+
+    public function test_operator_header_hides_unavailable_navigation_and_links_to_project_creation(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('operator-navigation');
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->get(route('admin.articles.index'))
+            ->assertOk()
+            ->assertSee(route('admin.client-projects.create'), false)
+            ->assertDontSee('href="'.route('admin.dashboard').'"', false)
+            ->assertDontSee('href="'.route('admin.analytics').'"', false)
+            ->assertDontSee('href="'.route('admin.ai.configurator').'"', false)
+            ->assertDontSee('href="'.route('admin.site-settings.index').'"', false);
+    }
+
+    public function test_operator_content_management_only_shows_review_and_automatic_batch_controls(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('operator-content-controls');
+        $article = $this->article($project, 'Operator Content Article');
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->get(route('admin.articles.index'))
+            ->assertOk()
+            ->assertSee('href="'.route('admin.publication-batches.index').'"', false)
+            ->assertSee('href="'.route('admin.tasks.create').'"', false)
+            ->assertSee('href="'.route('admin.articles.edit', ['articleId' => $article->id]).'"', false)
+            ->assertSee('value="batch_update_review"', false)
+            ->assertDontSee('href="'.route('admin.articles.create').'"', false)
+            ->assertDontSee('href="'.route('admin.manual-publications.index').'"', false)
+            ->assertDontSee('href="'.route('admin.publication-batches.create').'"', false)
+            ->assertDontSee('href="'.route('admin.categories.index').'"', false)
+            ->assertDontSee('href="'.route('admin.articles.index', ['trashed' => 1]).'"', false)
+            ->assertDontSee('<option value="batch_update_status">', false)
+            ->assertDontSee('<option value="delete_articles">', false);
+    }
+
+    public function test_operator_batch_detail_keeps_submission_but_hides_manual_batch_creation(): void
+    {
+        [$admin, $project] = $this->operatorWithProject('operator-batch-detail');
+        $batch = PublicationBatch::query()->create([
+            'client_project_id' => $project->id,
+            'status' => PublicationBatchStatus::DRAFT,
+            'idempotency_key' => 'operator-batch-detail-draft',
+            'created_by_admin_id' => $admin->id,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->withSession([ProjectAccessService::SESSION_KEY => $project->id])
+            ->get(route('admin.publication-batches.show', ['batchId' => $batch->id]))
+            ->assertOk()
+            ->assertSee('提交审核')
+            ->assertDontSee('href="'.route('admin.publication-batches.create').'"', false);
+    }
+
+    public function test_super_admin_keeps_manual_content_management_controls(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'super-content-controls',
+            'password' => 'secret-123',
+            'email' => 'super-content-controls@example.com',
+            'display_name' => 'Super Content Admin',
+            'role' => 'super_admin',
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.articles.index'))
+            ->assertOk()
+            ->assertSee('href="'.route('admin.articles.create').'"', false)
+            ->assertSee('href="'.route('admin.manual-publications.index').'"', false)
+            ->assertSee('href="'.route('admin.publication-batches.create').'"', false)
+            ->assertSee('href="'.route('admin.categories.index').'"', false)
+            ->assertSee('href="'.route('admin.articles.index', ['trashed' => 1]).'"', false);
     }
 
     public function test_operator_can_pause_task_in_selected_project(): void

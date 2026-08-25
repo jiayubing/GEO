@@ -22,7 +22,9 @@
             <h1 class="text-2xl font-bold text-gray-900">发布批次</h1>
             <p class="mt-1 text-sm leading-6 text-gray-600">查看当前项目所有运营提交的发布任务。</p>
         </div>
-        <a href="{{ route('admin.publication-batches.create') }}" class="inline-flex w-fit items-center rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">新建批次</a>
+        @if($canManageContentAdministration)
+            <a href="{{ route('admin.publication-batches.create') }}" class="inline-flex w-fit items-center rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">新建批次</a>
+        @endif
     </div>
 
     <form method="GET" action="{{ route('admin.publication-batches.index') }}" class="mt-6 flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end">

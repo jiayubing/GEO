@@ -11,7 +11,7 @@ use App\Models\ClientProject;
 use App\Models\PublicationBatch;
 use App\Models\PublicationBatchItem;
 use App\Services\GeoFlow\ProjectAccessService;
-use App\Services\GeoFlow\PublicationBatchLocalItemExecutor;
+use App\Services\GeoFlow\PublicationBatchRecoveryService;
 use App\Services\GeoFlow\PublicationBatchService;
 use App\Support\GeoFlow\PublicationGateContract;
 use DomainException;
@@ -24,13 +24,14 @@ final class PublicationBatchController extends Controller
     public function __construct(
         private readonly PublicationBatchService $service,
         private readonly ProjectAccessService $access,
-        private readonly PublicationBatchLocalItemExecutor $localExecutor,
+        private readonly PublicationBatchRecoveryService $recovery,
     ) {}
 
     public function index(Request $request)
     {
         $project = $this->project($request);
-        $this->access->requireRead($this->admin($request), $project);
+        $admin = $this->admin($request);
+        $this->access->requireRead($admin, $project);
 
         $status = $request->string('status')->toString();
         $statuses = array_map(static fn (PublicationBatchStatus $value): string => $value->value, PublicationBatchStatus::cases());
@@ -55,6 +56,69 @@ final class PublicationBatchController extends Controller
             'statuses' => PublicationBatchStatus::cases(),
             'pageTitle' => '发布批次',
             'activeMenu' => 'articles',
+            'canManageContentAdministration' => $this->access->canManageContentAdministration($admin, $project),
+        ]);
+    }
+
+    public function approvalIndex(Request $request)
+    {
+        $this->superAdmin($request);
+
+        $status = $request->string('status')->toString();
+        $statuses = array_map(static fn (PublicationBatchStatus $value): string => $value->value, PublicationBatchStatus::cases());
+        if ($status === 'all') {
+            $status = '';
+        } elseif (! in_array($status, $statuses, true)) {
+            $status = PublicationBatchStatus::SUBMITTED->value;
+        }
+
+        $batches = PublicationBatch::query()
+            ->whereNotNull('submitted_by_admin_id')
+            ->when($status !== '', fn ($query) => $query->where('status', $status))
+            ->with([
+                'clientProject:id,client_id,name,slug',
+                'clientProject.client:id,name,slug',
+                'submitter:id,username,display_name',
+            ])
+            ->withCount('items')
+            ->latest('submitted_at')
+            ->latest('id')
+            ->paginate(20)
+            ->withQueryString();
+
+        return view('admin.publication-batches.approval-index', [
+            'batches' => $batches,
+            'status' => $status,
+            'statuses' => PublicationBatchStatus::cases(),
+            'pageTitle' => '平台发布批次审批',
+            'activeMenu' => 'publication_approvals',
+        ]);
+    }
+
+    public function approvalShow(Request $request, int $batchId)
+    {
+        $this->superAdmin($request);
+        $batch = PublicationBatch::query()
+            ->with([
+                'items',
+                'clientProject:id,client_id,name,slug',
+                'clientProject.client:id,name,slug',
+                'submitter:id,username,display_name',
+            ])
+            ->whereKey($batchId)
+            ->firstOrFail();
+
+        return view('admin.publication-batches.show', [
+            'batch' => $batch,
+            'canDecide' => true,
+            'canExecuteLocal' => true,
+            'approvedLocalItemCount' => $this->approvedLocalItemCount($batch),
+            'isApprovalCenter' => true,
+            'batchActionRoute' => 'admin.publication-batch-approvals',
+            'batchIndexRoute' => 'admin.publication-batch-approvals.index',
+            'pageTitle' => '平台发布批次审批 #'.$batch->getKey(),
+            'activeMenu' => 'publication_approvals',
+            'canManageContentAdministration' => true,
         ]);
     }
 
@@ -124,22 +188,26 @@ final class PublicationBatchController extends Controller
         return back()->with('message', 'publication_batch_submitted');
     }
 
-    public function executeLocal(Request $request, int $batchId, int $itemId): RedirectResponse
+    public function executeLocalBatch(Request $request, int $batchId): RedirectResponse
     {
         $admin = $this->admin($request);
-        $project = $this->project($request);
+        abort_unless($admin->isSuperAdmin(), 403);
         $batch = PublicationBatch::query()->whereKey($batchId)->firstOrFail();
-        abort_unless((int) $batch->client_project_id === (int) $project->getKey(), 404);
+        $project = $batch->clientProject()->firstOrFail();
         $this->access->requireWrite($admin, $project, true);
-        $item = PublicationBatchItem::query()->where('publication_batch_id', $batch->getKey())->whereKey($itemId)->firstOrFail();
-        abort_unless($item->status === PublicationBatchItemStatus::APPROVED && $item->target_type?->value === PublicationGateContract::TARGET_LOCAL, 422, '仅批准的本地目标可执行');
-        $this->localExecutor->execute($item);
 
-        return redirect()->route('admin.publication-batches.show', ['batchId' => $batch->getKey()])->with('message', 'publication_batch_local_executed');
+        try {
+            $this->recovery->executeApprovedLocalItems($batch);
+        } catch (DomainException $exception) {
+            return back()->withErrors($exception->getMessage());
+        }
+
+        return redirect()->route('admin.publication-batch-approvals.show', ['batchId' => $batch->getKey()])->with('message', 'publication_batch_local_batch_executed');
     }
 
     public function approve(Request $request, int $batchId): RedirectResponse
     {
+        $this->superAdmin($request);
         $batch = PublicationBatch::query()->whereKey($batchId)->firstOrFail();
         try {
             $this->service->approve($this->admin($request), $batch);
@@ -152,6 +220,7 @@ final class PublicationBatchController extends Controller
 
     public function returnBatch(Request $request, int $batchId): RedirectResponse
     {
+        $this->superAdmin($request);
         $batch = PublicationBatch::query()->whereKey($batchId)->firstOrFail();
         try {
             $this->service->returnBatch($this->admin($request), $batch);
@@ -164,6 +233,7 @@ final class PublicationBatchController extends Controller
 
     public function reject(Request $request, int $batchId): RedirectResponse
     {
+        $this->superAdmin($request);
         $batch = PublicationBatch::query()->whereKey($batchId)->firstOrFail();
         try {
             $this->service->rejectBatch($this->admin($request), $batch);
@@ -174,33 +244,12 @@ final class PublicationBatchController extends Controller
         return back()->with('message', 'publication_batch_rejected');
     }
 
-    public function approveItem(Request $request, int $batchId, int $itemId): RedirectResponse
-    {
-        return $this->decideItem($request, $batchId, $itemId, 'approve');
-    }
-
-    public function rejectItem(Request $request, int $batchId, int $itemId): RedirectResponse
-    {
-        return $this->decideItem($request, $batchId, $itemId, 'reject');
-    }
-
-    private function decideItem(Request $request, int $batchId, int $itemId, string $decision): RedirectResponse
-    {
-        $item = PublicationBatchItem::query()->where('publication_batch_id', $batchId)->whereKey($itemId)->firstOrFail();
-        try {
-            $this->service->decideItem($this->admin($request), $item, $decision);
-        } catch (DomainException $exception) {
-            return back()->withErrors($exception->getMessage());
-        }
-
-        return back()->with('message', 'publication_batch_item_'.$decision.'d');
-    }
-
     public function show(Request $request, int $batchId)
     {
         $batch = PublicationBatch::query()->with('items')->whereKey($batchId)->firstOrFail();
         $project = $batch->clientProject()->firstOrFail();
-        $this->access->requireRead($this->admin($request), $project);
+        $admin = $this->admin($request);
+        $this->access->requireRead($admin, $project);
         $context = $this->project($request);
         abort_unless((int) $context->getKey() === (int) $project->getKey(), 404);
 
@@ -210,8 +259,15 @@ final class PublicationBatchController extends Controller
 
         return view('admin.publication-batches.show', [
             'batch' => $batch,
+            'canDecide' => false,
+            'canExecuteLocal' => false,
+            'approvedLocalItemCount' => $this->approvedLocalItemCount($batch),
+            'isApprovalCenter' => false,
+            'batchActionRoute' => 'admin.publication-batches',
+            'batchIndexRoute' => 'admin.publication-batches.index',
             'pageTitle' => '发布批次 #'.$batch->getKey(),
             'activeMenu' => 'articles',
+            'canManageContentAdministration' => $this->access->canManageContentAdministration($admin, $project),
         ]);
     }
 
@@ -229,5 +285,21 @@ final class PublicationBatchController extends Controller
         abort_unless($admin instanceof Admin, 403);
 
         return $admin;
+    }
+
+    private function superAdmin(Request $request): Admin
+    {
+        $admin = $this->admin($request);
+        abort_unless($admin->isSuperAdmin(), 403);
+
+        return $admin;
+    }
+
+    private function approvedLocalItemCount(PublicationBatch $batch): int
+    {
+        return $batch->items
+            ->filter(static fn (PublicationBatchItem $item): bool => $item->target_type?->value === PublicationGateContract::TARGET_LOCAL
+                && $item->status === PublicationBatchItemStatus::APPROVED)
+            ->count();
     }
 }

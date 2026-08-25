@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Category;
+use App\Models\ClientProject;
+use App\Services\GeoFlow\ProjectResourceResolver;
 use App\Support\AdminWeb;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -18,6 +20,13 @@ use Illuminate\View\View;
  */
 class CategoryController extends Controller
 {
+    public function __construct(private readonly ProjectResourceResolver $projectResources) {}
+    private function currentProject(): ?ClientProject { return request()->attributes->get('project_context'); }
+    private function category(int $id): Category
+    {
+        if ($project = $this->currentProject()) { return $this->projectResources->requireOwned(Category::class, $id, $project); }
+        return Category::query()->whereKey($id)->firstOrFail();
+    }
     /**
      * 栏目列表页。
      */
@@ -74,6 +83,7 @@ class CategoryController extends Controller
             'slug' => $slug,
             'description' => $description,
             'sort_order' => $sortOrder,
+            ...($this->currentProject() ? ['client_project_id' => $this->currentProject()->id] : []),
         ]);
 
         return redirect()->route('admin.categories.index')->with('message', __('admin.categories.message.add_success'));
@@ -84,7 +94,7 @@ class CategoryController extends Controller
      */
     public function edit(int $categoryId): View|RedirectResponse
     {
-        $category = Category::query()->whereKey($categoryId)->firstOrFail();
+        $category = $this->category($categoryId);
 
         return view('admin.categories.form', [
             'pageTitle' => __('admin.categories.page_title'),
@@ -106,7 +116,7 @@ class CategoryController extends Controller
      */
     public function update(Request $request, int $categoryId): RedirectResponse
     {
-        $category = Category::query()->whereKey($categoryId)->firstOrFail();
+        $category = $this->category($categoryId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -144,6 +154,7 @@ class CategoryController extends Controller
     {
         $category = Category::query()
             ->withCount(['articlesIncludingTrashed as all_articles_count'])
+            ->when($this->currentProject(), fn ($q, $project) => $q->where('client_project_id', $project->id))
             ->whereKey($categoryId)
             ->firstOrFail();
 
@@ -151,7 +162,7 @@ class CategoryController extends Controller
             return back()->withErrors(__('admin.categories.error.delete_blocked', ['count' => (int) $category->all_articles_count]));
         }
 
-        Category::query()->whereKey($categoryId)->delete();
+        $category->delete();
 
         return redirect()->route('admin.categories.index')->with('message', __('admin.categories.message.delete_success'));
     }
@@ -171,6 +182,7 @@ class CategoryController extends Controller
             ])
             ->orderBy('sort_order')
             ->orderBy('name');
+        if ($project = $this->currentProject()) { $query->where('client_project_id', $project->id); }
 
         return $query->get()
             ->map(static function (Category $category): array {

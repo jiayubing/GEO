@@ -15,6 +15,7 @@ use App\Models\Task;
 use App\Models\TaskRun;
 use App\Models\TaskSchedule;
 use App\Models\TitleLibrary;
+use DomainException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -41,7 +42,8 @@ class TaskLifecycleService
         private JobQueueService $queueService,
         private TaskMonitoringQueryService $taskMonitoringQueryService,
         private TaskRealtimeBroadcastService $taskRealtimeBroadcastService,
-        private ProjectResourceResolver $projectResources
+        private ProjectResourceResolver $projectResources,
+        private TaskPublicationBatchService $taskPublicationBatches,
     ) {}
 
     /**
@@ -72,11 +74,11 @@ class TaskLifecycleService
      * @param  array<string,mixed>  $data
      * @return array<string,mixed> 新建后的任务详情（getTask 结构）
      */
-    public function createTask(array $data, ?ClientProject $project = null): array
+    public function createTask(array $data, ?ClientProject $project = null, ?int $createdByAdminId = null): array
     {
         $normalized = $this->normalizeTaskInput($data, false);
 
-        $taskId = DB::transaction(function () use ($normalized, $project): int {
+        $taskId = DB::transaction(function () use ($normalized, $project, $createdByAdminId): int {
             $task = Task::query()->create([
                 'name' => $normalized['name'],
                 'title_library_id' => $normalized['title_library_id'],
@@ -101,6 +103,7 @@ class TaskLifecycleService
                 'category_mode' => $normalized['category_mode'],
                 'fixed_category_id' => $normalized['fixed_category_id'],
                 'client_project_id' => $project?->getKey(),
+                'created_by_admin_id' => $createdByAdminId,
             ]);
 
             if ($project !== null) {
@@ -159,7 +162,7 @@ class TaskLifecycleService
      * @param  array<string,mixed>  $data
      * @return array<string,mixed>
      */
-    public function updateTask(int $taskId, array $data, ?ClientProject $project = null): array
+    public function updateTask(int $taskId, array $data, ?ClientProject $project = null, ?int $actorId = null): array
     {
         $this->ensureTaskExists($taskId, $project);
         $normalized = $this->normalizeTaskInput($data, true);
@@ -197,6 +200,9 @@ class TaskLifecycleService
         });
 
         $task = $this->getTask($taskId, $project);
+        if ($status === 'paused') {
+            $this->taskPublicationBatches->finalizeTask($taskId, $project, $actorId);
+        }
         $this->broadcastOverviewAfterCommit();
 
         return $task;
@@ -268,6 +274,15 @@ class TaskLifecycleService
     public function startTask(int $taskId, bool $enqueueNow = false, ?ClientProject $project = null): array
     {
         $this->ensureTaskExists($taskId, $project);
+        try {
+            $this->taskPublicationBatches->assertCanResume($taskId, $project);
+        } catch (DomainException $exception) {
+            if ($exception->getMessage() === 'publication_task_batch_finalized') {
+                throw new ApiException('publication_task_batch_finalized', '任务的发布批次已提交，不能恢复任务', 409);
+            }
+
+            throw $exception;
+        }
         $jobId = DB::transaction(function () use ($taskId, $enqueueNow, $project): ?int {
             // 手动“立即执行”场景下，不把 next_run_at 强行置为 now，
             // 避免与手动入队叠加导致一次点击触发两次执行。
@@ -305,7 +320,7 @@ class TaskLifecycleService
      *
      * @return array<string,mixed>
      */
-    public function stopTask(int $taskId, ?ClientProject $project = null): array
+    public function stopTask(int $taskId, ?ClientProject $project = null, ?int $actorId = null): array
     {
         $this->ensureTaskExists($taskId, $project);
         [$cancelledJobs, $runningJobs] = DB::transaction(function () use ($taskId, $project): array {
@@ -318,6 +333,7 @@ class TaskLifecycleService
             return [$cancelledJobs, $runningJobs];
         });
         $task = $this->getTask($taskId, $project);
+        $this->taskPublicationBatches->finalizeTask($taskId, $project, $actorId);
         $task['cancelled_jobs'] = $cancelledJobs;
         $task['running_jobs'] = $runningJobs;
         $this->broadcastOverviewAfterCommit();
@@ -550,7 +566,7 @@ class TaskLifecycleService
         if (array_key_exists('publish_interval', $data)) {
             $output['publish_interval'] = max(60, (int) $data['publish_interval']);
         } elseif (! $isUpdate) {
-            $output['publish_interval'] = 3600;
+            $output['publish_interval'] = max(60, (int) config('geoflow.task_default_draft_generation_interval_seconds', 60));
         }
 
         if (array_key_exists('draft_limit', $data)) {

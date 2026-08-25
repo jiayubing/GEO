@@ -1,5 +1,7 @@
 @extends('admin.layouts.app')
 
+@php($visibleModels = collect($models)->reject(fn (array $model): bool => $model['model_type'] === 'embedding')->values())
+
 @section('content')
     <div class="px-4 sm:px-0">
         <div class="flex items-center justify-between mb-8">
@@ -16,95 +18,6 @@
                 <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
                 {{ __('admin.ai_models.create') }}
             </button>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-            <div class="bg-white shadow rounded-lg">
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <h3 class="text-lg font-medium text-gray-900">{{ __('admin.ai_models.vector_title') }}</h3>
-                    <p class="mt-1 text-sm text-gray-600">{{ __('admin.ai_models.vector_desc') }}</p>
-                </div>
-                <div class="px-6 py-5 space-y-4">
-                    <div class="flex items-center justify-between">
-                        <span class="text-sm text-gray-600">{{ __('admin.ai_models.pgvector') }}</span>
-                        <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full {{ $pgvectorEnabled ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800' }}">
-                            {{ $pgvectorEnabled ? __('admin.ai_models.pgvector_enabled') : __('admin.ai_models.pgvector_fallback') }}
-                        </span>
-                    </div>
-
-                    <form method="POST" action="{{ route('admin.ai-models.default-embedding') }}" class="space-y-3">
-                        @csrf
-                        <div>
-                            <label for="default_embedding_model_id" class="block text-sm font-medium text-gray-700">{{ __('admin.ai_models.default_embedding') }}</label>
-                            <select name="default_embedding_model_id" id="default_embedding_model_id" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                                <option value="0">{{ __('admin.ai_models.embedding_auto') }}</option>
-                                @foreach ($embeddingModels as $embeddingModel)
-                                    <option value="{{ (int) $embeddingModel['id'] }}" @selected($defaultEmbeddingModelId === (int) $embeddingModel['id'])>
-                                        {{ $embeddingModel['name'].' ('.$embeddingModel['model_id'].')' }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.embedding_help') }}</p>
-                        </div>
-                        <div class="flex justify-end">
-                            <button type="submit" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-slate-800 hover:bg-slate-900">
-                                {{ __('admin.ai_models.save_default') }}
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-
-            <div class="bg-white shadow rounded-lg">
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <h3 class="text-lg font-medium text-gray-900">{{ __('admin.ai_models.type_title') }}</h3>
-                    <p class="mt-1 text-sm text-gray-600">{{ __('admin.ai_models.type_desc') }}</p>
-                </div>
-                <div class="px-6 py-5 space-y-3 text-sm text-gray-700">
-                    <p>{{ __('admin.ai_models.type_chat') }}</p>
-                    <p>{{ __('admin.ai_models.type_embedding') }}</p>
-                    <p>{{ __('admin.ai_models.type_rerank') }}</p>
-                    <p>{{ __('admin.ai_models.type_fallback') }}</p>
-                </div>
-            </div>
-
-            <div class="bg-white shadow rounded-lg">
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <h3 class="text-lg font-medium text-gray-900">{{ __('admin.ai_models.chunking_title') }}</h3>
-                    <p class="mt-1 text-sm text-gray-600">{{ __('admin.ai_models.chunking_desc') }}</p>
-                </div>
-                <div class="px-6 py-5">
-                    <form method="POST" action="{{ route('admin.ai-models.chunking-config') }}" class="space-y-4">
-                        @csrf
-                        <div>
-                            <label for="knowledge_chunk_strategy" class="block text-sm font-medium text-gray-700">{{ __('admin.ai_models.chunk_strategy') }}</label>
-                            <select name="knowledge_chunk_strategy" id="knowledge_chunk_strategy" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                                <option value="rule" @selected(($chunkingConfig['strategy'] ?? 'rule') === 'rule')>{{ __('admin.ai_models.chunk_strategy_rule') }}</option>
-                                <option value="auto" @selected(($chunkingConfig['strategy'] ?? 'rule') === 'auto')>{{ __('admin.ai_models.chunk_strategy_auto') }}</option>
-                                <option value="semantic_llm" @selected(($chunkingConfig['strategy'] ?? 'rule') === 'semantic_llm')>{{ __('admin.ai_models.chunk_strategy_semantic') }}</option>
-                            </select>
-                            <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.chunk_strategy_help') }}</p>
-                        </div>
-                        <div>
-                            <label for="knowledge_chunking_model_id" class="block text-sm font-medium text-gray-700">{{ __('admin.ai_models.chunking_model') }}</label>
-                            <select name="knowledge_chunking_model_id" id="knowledge_chunking_model_id" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                                <option value="0">{{ __('admin.ai_models.chunking_model_none') }}</option>
-                                @foreach ($chatModels as $chatModel)
-                                    <option value="{{ (int) $chatModel['id'] }}" @selected((int) ($chunkingConfig['model_id'] ?? 0) === (int) $chatModel['id'])>
-                                        {{ $chatModel['name'].' ('.$chatModel['model_id'].')' }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.chunking_model_help') }}</p>
-                        </div>
-                        <div class="flex justify-end">
-                            <button type="submit" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-slate-800 hover:bg-slate-900">
-                                {{ __('admin.ai_models.save_chunking') }}
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
         </div>
 
         <div class="bg-white shadow rounded-lg">
@@ -126,7 +39,7 @@
                     </tr>
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-200">
-                    @if (empty($models))
+                    @if ($visibleModels->isEmpty())
                         <tr>
                             <td colspan="6" class="px-6 py-4 text-center text-gray-500">
                                 <i data-lucide="cpu" class="w-8 h-8 mx-auto mb-2 text-gray-400"></i>
@@ -137,18 +50,15 @@
                             </td>
                         </tr>
                     @else
-                        @foreach ($models as $model)
+                        @foreach ($visibleModels as $model)
                             <tr>
                                 <td class="px-6 py-4">
                                     <div>
                                         <div class="flex items-center gap-2">
                                             <div class="text-sm font-medium text-gray-900">{{ $model['name'] }}</div>
-                                            <span class="inline-flex px-2 py-0.5 text-xs font-semibold rounded-full {{ $model['model_type'] === 'embedding' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-sky-800' }}">
-                                                {{ $model['model_type'] === 'embedding' ? __('admin.ai_models.type_embedding_option') : __('admin.ai_models.chat') }}
+                                            <span class="inline-flex px-2 py-0.5 text-xs font-semibold rounded-full bg-sky-100 text-sky-800">
+                                                {{ __('admin.ai_models.chat') }}
                                             </span>
-                                            @if ($model['is_default_embedding'])
-                                                <span class="inline-flex px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800">{{ __('admin.ai_models.embedding_default') }}</span>
-                                            @endif
                                         </div>
                                         <div class="text-sm text-gray-500">{{ $model['model_id'] }}</div>
                                         <div class="text-xs text-gray-400">{{ __('admin.ai_models.api_key_mask') }}: {{ $model['masked_api_key'] }}</div>
@@ -234,15 +144,7 @@
                             <button type="button" onclick="fillPreset('zhipu')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Zhipu GLM</button>
                             <button type="button" onclick="fillPreset('volcengine_ark')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Volcengine Ark</button>
                         </div>
-                        <label class="block text-sm font-medium text-gray-700 mt-4 mb-2">{{ __('admin.ai_models.quick_embedding') }}</label>
-                        <div class="flex flex-wrap gap-2">
-                            <button type="button" onclick="fillPreset('openai_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">OpenAI Embedding</button>
-                            <button type="button" onclick="fillPreset('gemini_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Gemini Embedding</button>
-                            <button type="button" onclick="fillPreset('volcengine_ark_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Doubao Embedding</button>
-                            <button type="button" onclick="fillPreset('zhipu_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Zhipu Embedding</button>
-                        </div>
                         <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.quick_help') }}</p>
-                        <p class="mt-2 text-xs text-amber-700">{{ __('admin.ai_models.gemini_embedding_notice') }}</p>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -256,14 +158,7 @@
                         </div>
                     </div>
 
-                    <div>
-                        <label for="model_type" class="block text-sm font-medium text-gray-700">{{ __('admin.ai_models.field_type') }}</label>
-                        <select name="model_type" id="model_type" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                            <option value="chat">{{ __('admin.ai_models.type_chat_option') }}</option>
-                            <option value="embedding">{{ __('admin.ai_models.type_embedding_option') }}</option>
-                        </select>
-                        <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.type_help') }}</p>
-                    </div>
+                    <input type="hidden" name="model_type" id="model_type" value="chat">
 
                     <div>
                         <label for="model_id" class="block text-sm font-medium text-gray-700">{{ __('admin.ai_models.field_model_id') }}</label>
@@ -354,10 +249,6 @@
             deepseek_v4_pro: {name: 'DeepSeek V4 Pro', version: 'v4', model_id: 'deepseek-v4-pro', api_url: 'https://api.deepseek.com', model_type: 'chat'},
             zhipu: {name: '智谱 GLM-5.2', version: 'v4', model_id: 'glm-5.2', api_url: 'https://open.bigmodel.cn/api/paas/v4', model_type: 'chat'},
             volcengine_ark: {name: '火山方舟 Chat', version: 'v3', model_id: '', api_url: 'https://ark.cn-beijing.volces.com/api/v3', model_type: 'chat'},
-            openai_embedding: {name: 'OpenAI Embedding 3 Small', version: '', model_id: 'text-embedding-3-small', api_url: 'https://api.openai.com', model_type: 'embedding'},
-            gemini_embedding: {name: 'Gemini Embedding 2', version: 'v1beta', model_id: 'gemini-embedding-2', api_url: 'https://generativelanguage.googleapis.com/v1beta', model_type: 'embedding'},
-            volcengine_ark_embedding: {name: 'Doubao Embedding', version: 'v3', model_id: 'doubao-embedding-text-240515', api_url: 'https://ark.cn-beijing.volces.com/api/v3', model_type: 'embedding'},
-            zhipu_embedding: {name: '智谱 Embedding-3', version: 'v4', model_id: 'embedding-3', api_url: 'https://open.bigmodel.cn/api/paas/v4', model_type: 'embedding'},
         };
 
         function showCreateModelModal() {

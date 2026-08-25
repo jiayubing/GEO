@@ -12,8 +12,10 @@ use App\Models\Task;
 use App\Models\TitleLibrary;
 use App\Services\GeoFlow\JobQueueService;
 use App\Services\GeoFlow\KnowledgeChunkSyncCoordinator;
+use App\Services\GeoFlow\ProjectResourceResolver;
 use App\Services\GeoFlow\TaskLifecycleService;
 use App\Services\GeoFlow\TaskMonitoringQueryService;
+use App\Services\GeoFlow\TaskPublicationBatchService;
 use App\Services\GeoFlow\TaskRealtimeBroadcastService;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -409,6 +411,7 @@ class ApiV1ContractTest extends TestCase
         $response->assertCreated()
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.name', 'API create task with optional fields omitted')
+            ->assertJsonPath('data.publish_interval', 60)
             ->assertJsonPath('data.image_library_id', null)
             ->assertJsonPath('data.author_id', null)
             ->assertJsonPath('data.knowledge_base_id', null)
@@ -529,7 +532,8 @@ class ApiV1ContractTest extends TestCase
             app(JobQueueService::class),
             $monitoring,
             $realtime,
-            app(\App\Services\GeoFlow\ProjectResourceResolver::class),
+            app(ProjectResourceResolver::class),
+            app(TaskPublicationBatchService::class),
         );
 
         $baselineTransactionLevel = DB::transactionLevel();

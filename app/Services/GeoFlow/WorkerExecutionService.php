@@ -2,8 +2,8 @@
 
 namespace App\Services\GeoFlow;
 
-use App\Exceptions\ArticleRiskGateException;
 use App\Enums\PublicationGate;
+use App\Exceptions\ArticleRiskGateException;
 use App\Models\AiModel;
 use App\Models\Article;
 use App\Models\ArticleImage;
@@ -38,6 +38,7 @@ class WorkerExecutionService
         private readonly KnowledgeChunkSyncService $knowledgeChunkSyncService,
         private readonly KnowledgeRetrievalService $knowledgeRetrievalService,
         private readonly DistributionOrchestrator $distributionOrchestrator,
+        private readonly TaskPublicationBatchService $taskPublicationBatches,
         private readonly ArticleRiskScanner $articleRiskScanner,
         private readonly ArticleWorkflowTransitionService $articleWorkflowTransitionService,
         private readonly ArticleContentPromptRenderer $articleContentPromptRenderer,
@@ -72,14 +73,16 @@ class WorkerExecutionService
             throw new RuntimeException('任务未激活');
         }
 
-        $publishResult = $this->publishDueDraftArticle($task, $project);
-        if ($publishResult !== null) {
-            if (($publishResult['meta']['action'] ?? null) !== 'publish_draft') {
+        if (! $this->usesTaskPublicationBatch($project)) {
+            $publishResult = $this->publishDueDraftArticle($task, $project);
+            if ($publishResult !== null) {
+                if (($publishResult['meta']['action'] ?? null) !== 'publish_draft') {
+                    return $publishResult;
+                }
+                $this->distributionOrchestrator->enqueueForArticle((int) $publishResult['article_id']);
+
                 return $publishResult;
             }
-            $this->distributionOrchestrator->enqueueForArticle((int) $publishResult['article_id']);
-
-            return $publishResult;
         }
 
         $generationBlockReason = $this->getGenerationBlockReason($task);
@@ -123,7 +126,7 @@ class WorkerExecutionService
                 ->when($project !== null, fn ($query) => $query->where('client_project_id', $project->getKey()))
                 ->when($project === null, fn ($query) => $query->whereNull('client_project_id'))
                 ->lockForUpdate()
-                ->first(['id', 'status', 'schedule_enabled', 'created_count', 'draft_limit', 'article_limit', 'publish_interval', 'next_publish_at', 'client_project_id']);
+                ->first(['id', 'status', 'schedule_enabled', 'created_count', 'draft_limit', 'article_limit', 'publish_interval', 'next_publish_at', 'publish_scope', 'client_project_id']);
             if (! $freshTask || ($freshTask->status ?? 'paused') !== 'active' || (int) ($freshTask->schedule_enabled ?? 1) !== 1) {
                 throw new RuntimeException('任务未激活');
             }
@@ -151,6 +154,7 @@ class WorkerExecutionService
                 'is_ai_generated' => 1,
                 'published_at' => $pendingWorkflow['published_at'],
                 'view_count' => 0,
+                'central_site_allowed' => (string) ($freshTask->publish_scope ?? 'local_and_distribution') !== 'distribution_only',
             ]);
 
             $this->articleRiskScanner->record($article, 'worker_generation');
@@ -193,13 +197,17 @@ class WorkerExecutionService
                 'loop_count' => DB::raw('COALESCE(loop_count,0)+1'),
                 'updated_at' => now(),
             ];
-            if ($freshTask->next_publish_at === null || ! $freshTask->next_publish_at->greaterThan(now())) {
+            if (! $this->usesTaskPublicationBatch($project) && ($freshTask->next_publish_at === null || ! $freshTask->next_publish_at->greaterThan(now()))) {
                 $taskUpdate['next_publish_at'] = now()->addSeconds($this->normalizePublishInterval($freshTask));
             }
             Task::query()->whereKey($task->id)->update($taskUpdate);
 
             return (int) $article->id;
         });
+
+        if ($this->usesTaskPublicationBatch($project)) {
+            $this->taskPublicationBatches->recordArticleReviewOutcome($articleId);
+        }
 
         return [
             'article_id' => $articleId,
@@ -350,7 +358,12 @@ class WorkerExecutionService
 
     private function normalizePublishInterval(Task $task): int
     {
-        return max(60, (int) ($task->publish_interval ?? 3600));
+        return max(60, (int) ($task->publish_interval ?? config('geoflow.task_default_draft_generation_interval_seconds', 60)));
+    }
+
+    private function usesTaskPublicationBatch(?ClientProject $project): bool
+    {
+        return $project instanceof ClientProject && $project->publication_gate === PublicationGate::PLATFORM_APPROVAL;
     }
 
     /**

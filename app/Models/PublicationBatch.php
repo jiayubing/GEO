@@ -12,7 +12,7 @@ class PublicationBatch extends Model
     protected $attributes = ['status' => PublicationBatchStatus::DRAFT];
 
     protected $fillable = [
-        'client_project_id', 'status', 'idempotency_key', 'created_by_admin_id', 'updated_by_admin_id',
+        'client_project_id', 'task_id', 'status', 'idempotency_key', 'created_by_admin_id', 'updated_by_admin_id',
         'submitted_by_admin_id', 'approved_by_admin_id', 'status_changed_at', 'submitted_at', 'approved_at', 'completed_at',
     ];
 
@@ -21,6 +21,7 @@ class PublicationBatch extends Model
         return [
             'status' => PublicationBatchStatus::class,
             'client_project_id' => 'integer',
+            'task_id' => 'integer',
             'created_by_admin_id' => 'integer',
             'updated_by_admin_id' => 'integer',
             'submitted_by_admin_id' => 'integer',
@@ -35,6 +36,11 @@ class PublicationBatch extends Model
     public function clientProject(): BelongsTo
     {
         return $this->belongsTo(ClientProject::class);
+    }
+
+    public function task(): BelongsTo
+    {
+        return $this->belongsTo(Task::class);
     }
 
     public function items(): HasMany

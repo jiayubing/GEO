@@ -46,13 +46,15 @@ class ProcessGeoFlowTaskJob implements ShouldQueue
      */
     public function tags(): array
     {
-        $run = TaskRun::query()->whereKey($this->taskRunId)->first(['task_id']);
+        $run = TaskRun::query()->with('task:id,client_project_id')->whereKey($this->taskRunId)->first(['id', 'task_id']);
         $taskId = (int) ($run?->task_id ?? 0);
+        $projectId = (int) ($run?->task?->client_project_id ?? 0);
 
         return array_values(array_filter([
             'geoflow',
             'task_run:'.$this->taskRunId,
             $taskId > 0 ? 'task:'.$taskId : null,
+            $projectId > 0 ? 'project:'.$projectId : null,
         ]));
     }
 

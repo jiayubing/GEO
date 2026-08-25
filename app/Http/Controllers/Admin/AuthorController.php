@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Article;
 use App\Models\Author;
+use App\Models\ClientProject;
+use App\Services\GeoFlow\ProjectResourceResolver;
 use App\Support\AdminWeb;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -17,6 +19,13 @@ use Illuminate\View\View;
 class AuthorController extends Controller
 {
     private const INDEX_PER_PAGE = 20;
+    public function __construct(private readonly ProjectResourceResolver $projectResources) {}
+    private function currentProject(): ?ClientProject { return request()->attributes->get('project_context'); }
+    private function author(int $id): Author
+    {
+        if ($project = $this->currentProject()) { return $this->projectResources->requireOwned(Author::class, $id, $project); }
+        return Author::query()->whereKey($id)->firstOrFail();
+    }
 
     /**
      * 作者列表页。
@@ -43,7 +52,7 @@ class AuthorController extends Controller
      */
     public function detail(int $authorId): View|RedirectResponse
     {
-        $author = Author::query()->whereKey($authorId)->firstOrFail();
+        $author = $this->author($authorId);
 
         $articles = Article::query()
             ->select(['id', 'title', 'status', 'review_status', 'created_at', 'deleted_at'])
@@ -97,6 +106,7 @@ class AuthorController extends Controller
             'bio' => trim((string) ($payload['bio'] ?? '')),
             'website' => trim((string) ($payload['website'] ?? '')),
             'social_links' => trim((string) ($payload['social_links'] ?? '')),
+            ...($this->currentProject() ? ['client_project_id' => $this->currentProject()->id] : []),
         ]);
 
         return redirect()->route('admin.authors.index')->with('message', __('admin.authors.message.create_success'));
@@ -107,7 +117,7 @@ class AuthorController extends Controller
      */
     public function edit(int $authorId): View|RedirectResponse
     {
-        $author = Author::query()->whereKey($authorId)->firstOrFail();
+        $author = $this->author($authorId);
 
         return view('admin.authors.form', [
             'pageTitle' => __('admin.authors.page_title'),
@@ -130,7 +140,7 @@ class AuthorController extends Controller
      */
     public function update(Request $request, int $authorId): RedirectResponse
     {
-        $author = Author::query()->whereKey($authorId)->firstOrFail();
+        $author = $this->author($authorId);
 
         $payload = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -158,7 +168,7 @@ class AuthorController extends Controller
      */
     public function destroy(int $authorId): RedirectResponse
     {
-        $author = Author::query()->whereKey($authorId)->firstOrFail();
+        $author = $this->author($authorId);
 
         $visibleCount = Article::query()->where('author_id', $authorId)->whereNull('deleted_at')->count();
         if ($visibleCount > 0) {
@@ -185,6 +195,7 @@ class AuthorController extends Controller
         $query = Author::query()
             ->select(['id', 'name', 'email', 'bio', 'website', 'social_links', 'created_at'])
             ->orderByDesc('created_at');
+        if ($project = $this->currentProject()) { $query->where('client_project_id', $project->id); }
 
         if ($search !== '') {
             $query->where(function ($builder) use ($search): void {

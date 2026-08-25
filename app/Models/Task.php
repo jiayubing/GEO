@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Task extends Model
 {
@@ -48,6 +49,7 @@ class Task extends Model
         'schedule_enabled',
         'max_retry_count',
         'client_project_id',
+        'created_by_admin_id',
     ];
 
     protected function casts(): array
@@ -81,6 +83,7 @@ class Task extends Model
             'schedule_enabled' => 'integer',
             'max_retry_count' => 'integer',
             'client_project_id' => 'integer',
+            'created_by_admin_id' => 'integer',
         ];
     }
 
@@ -92,6 +95,16 @@ class Task extends Model
     public function clientProject(): BelongsTo
     {
         return $this->belongsTo(ClientProject::class, 'client_project_id');
+    }
+
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(Admin::class, 'created_by_admin_id');
+    }
+
+    public function publicationBatch(): HasOne
+    {
+        return $this->hasOne(PublicationBatch::class, 'task_id');
     }
 
     public function imageLibrary(): BelongsTo

@@ -71,6 +71,8 @@ return [
         'https://geoflow-telemetry-gateway.pages.dev/api/pulse',
     )),
     'telemetry_interval_seconds' => max(3600, (int) env('GEOFLOW_TELEMETRY_INTERVAL_SECONDS', 86400)),
+    // 新任务在未显式设置时，每隔多久生成下一篇草稿（秒）。后台表单以分钟显示，API 保持秒为单位。
+    'task_default_draft_generation_interval_seconds' => max(60, (int) env('GEOFLOW_TASK_DEFAULT_DRAFT_GENERATION_INTERVAL_SECONDS', 60)),
     // GitHub version.json 地址；默认每天检查一次，可通过 GEOFLOW_UPDATE_CHECK_ENABLED=false 关闭
     'update_check_enabled' => filter_var(env('GEOFLOW_UPDATE_CHECK_ENABLED', env('APP_ENV') !== 'testing'), FILTER_VALIDATE_BOOLEAN),
     'update_metadata_url' => $updateMetadataUrl,

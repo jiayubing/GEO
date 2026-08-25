@@ -20,6 +20,7 @@ use App\Http\Controllers\Admin\ArticleEditorAssetController;
 use App\Http\Controllers\Admin\ArticleEditorAssistantController;
 use App\Http\Controllers\Admin\AuthorController;
 use App\Http\Controllers\Admin\CategoryController;
+use App\Http\Controllers\Admin\ClientProjectController;
 use App\Http\Controllers\Admin\ContentAnalyticsController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DistributionAnalyticsController;
@@ -51,6 +52,9 @@ use App\Http\Controllers\Site\ArticleController as SiteArticleController;
 use App\Http\Controllers\Site\CategoryController as SiteCategoryController;
 use App\Http\Controllers\Site\HomeController;
 use App\Http\Controllers\Site\LeadFormController as SiteLeadFormController;
+use App\Models\Admin;
+use App\Services\GeoFlow\AdminLandingService;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
@@ -75,9 +79,12 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
     // 通用入口与语言切换
     Route::get('locale/{locale}', [AdminAuthController::class, 'switchLocale'])->name('locale.switch');
 
-    Route::get('/', function () {
-        return Auth::guard('admin')->check()
-            ? redirect()->route('admin.dashboard')
+    Route::get('/', function (Request $request, AdminLandingService $adminLanding) {
+        /** @var Admin|null $admin */
+        $admin = Auth::guard('admin')->user();
+
+        return $admin instanceof Admin
+            ? redirect()->to($adminLanding->routeFor($request, $admin))
             : redirect()->route('admin.login');
     })->name('entry');
 
@@ -94,11 +101,29 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
         Route::get('/', [ProjectContextController::class, 'show'])->name('show');
         Route::post('switch', [ProjectContextController::class, 'switch'])->name('switch');
     });
+    Route::middleware(['admin.auth', 'admin.activity'])->prefix('client-projects')->name('client-projects.')->group(function (): void {
+        Route::get('create', [ClientProjectController::class, 'create'])->name('create');
+        Route::post('/', [ClientProjectController::class, 'store'])->name('store');
+        Route::post('form', [ClientProjectController::class, 'storePage'])->name('store.page');
+    });
+    // 平台审批中心不使用运营项目上下文；每个批次从自身 client_project_id 解析归属。
+    Route::middleware(['admin.auth', 'admin.activity'])->prefix('publication-batch-approvals')->name('publication-batch-approvals.')->group(function (): void {
+        Route::get('/', [PublicationBatchController::class, 'approvalIndex'])->name('index');
+        Route::get('{batchId}', [PublicationBatchController::class, 'approvalShow'])->name('show')->whereNumber('batchId');
+        Route::post('{batchId}/approve', [PublicationBatchController::class, 'approve'])->name('approve')->whereNumber('batchId');
+        Route::post('{batchId}/return', [PublicationBatchController::class, 'returnBatch'])->name('return')->whereNumber('batchId');
+        Route::post('{batchId}/reject', [PublicationBatchController::class, 'reject'])->name('reject')->whereNumber('batchId');
+        Route::post('{batchId}/execute-local', [PublicationBatchController::class, 'executeLocalBatch'])->name('execute-local')->whereNumber('batchId');
+    });
+
+    // 退出只需要后台会话鉴权，不依赖运营项目上下文。
+    Route::middleware(['admin.auth', 'admin.activity'])->group(function (): void {
+        Route::post('logout', [AdminAuthController::class, 'logout'])->name('logout');
+    });
 
     // 后台受保护路由；阶段 2 完成资源过滤前，普通 operator 暂不开放这些全局页面。
     Route::middleware(['admin.auth', 'admin.project_surface', 'admin.activity'])->group(function () {
         // 会话与首页
-        Route::post('logout', [AdminAuthController::class, 'logout'])->name('logout');
         Route::post('welcome/dismiss', [AdminWelcomeController::class, 'dismiss'])->name('welcome.dismiss');
         Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
         Route::get('analytics', [AnalyticsController::class, 'index'])->name('analytics');
@@ -239,12 +264,6 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
             Route::get('{batchId}', [PublicationBatchController::class, 'show'])->name('show')->whereNumber('batchId');
             Route::put('{batchId}', [PublicationBatchController::class, 'update'])->name('update')->whereNumber('batchId');
             Route::post('{batchId}/submit', [PublicationBatchController::class, 'submit'])->name('submit')->whereNumber('batchId');
-            Route::post('{batchId}/items/{itemId}/execute-local', [PublicationBatchController::class, 'executeLocal'])->name('items.execute-local')->whereNumber('batchId')->whereNumber('itemId');
-            Route::post('{batchId}/approve', [PublicationBatchController::class, 'approve'])->name('approve')->whereNumber('batchId');
-            Route::post('{batchId}/return', [PublicationBatchController::class, 'returnBatch'])->name('return')->whereNumber('batchId');
-            Route::post('{batchId}/reject', [PublicationBatchController::class, 'reject'])->name('reject')->whereNumber('batchId');
-            Route::post('{batchId}/items/{itemId}/approve', [PublicationBatchController::class, 'approveItem'])->name('items.approve')->whereNumber('batchId')->whereNumber('itemId');
-            Route::post('{batchId}/items/{itemId}/reject', [PublicationBatchController::class, 'rejectItem'])->name('items.reject')->whereNumber('batchId')->whereNumber('itemId');
         });
 
         // 栏目管理（保持 geo_admin/categories 路径语义）

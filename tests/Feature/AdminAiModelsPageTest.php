@@ -513,12 +513,17 @@ class AdminAiModelsPageTest extends TestCase
             && ! array_key_exists('topK', (array) ($request['generationConfig'] ?? [])));
     }
 
-    public function test_admin_models_page_shows_embedding_quick_fill_presets_and_notice(): void
+    public function test_admin_models_page_hides_embedding_configuration_but_keeps_chat_model_management(): void
     {
+        $chatModel = $this->createAiModel('chat', ['name' => 'Visible Chat Model']);
+        $embeddingModel = $this->createAiModel('embedding', ['name' => 'Hidden Embedding Model']);
+
         $response = $this->actingAs($this->createAdmin(), 'admin')
             ->get(route('admin.ai-models.index'));
 
         $response->assertOk()
+            ->assertSee($chatModel->name)
+            ->assertDontSee($embeddingModel->name)
             ->assertSee('MiniMax-M3', false)
             ->assertSee('MiniMax M2.7', false)
             ->assertSee('MiniMax-M2.7-highspeed', false)
@@ -531,10 +536,13 @@ class AdminAiModelsPageTest extends TestCase
             ->assertSee('gemini-3.6-flash', false)
             ->assertSee('GLM-5.2', false)
             ->assertSee('Gemini', false)
-            ->assertSee('Gemini Embedding', false)
-            ->assertSee('Doubao Embedding', false)
-            ->assertSee('doubao-embedding-text-240515', false)
-            ->assertSee(__('admin.ai_models.gemini_embedding_notice'));
+            ->assertDontSee('Gemini Embedding', false)
+            ->assertDontSee('Doubao Embedding', false)
+            ->assertDontSee('doubao-embedding-text-240515', false)
+            ->assertDontSee('name="default_embedding_model_id"', false)
+            ->assertDontSee('value="embedding"', false)
+            ->assertDontSee('knowledge_chunk_strategy', false)
+            ->assertDontSee(__('admin.ai_models.gemini_embedding_notice'));
     }
 
     public function test_admin_can_update_knowledge_chunking_config(): void
@@ -560,7 +568,7 @@ class AdminAiModelsPageTest extends TestCase
         );
     }
 
-    public function test_admin_models_page_shows_knowledge_chunking_config(): void
+    public function test_admin_models_page_hides_knowledge_chunking_config(): void
     {
         $model = $this->createAiModel('chat', ['name' => 'Gemini 3.1 Flash Lite']);
 
@@ -568,8 +576,8 @@ class AdminAiModelsPageTest extends TestCase
             ->get(route('admin.ai-models.index'));
 
         $response->assertOk()
-            ->assertSee(__('admin.ai_models.chunking_title'))
-            ->assertSee(__('admin.ai_models.chunk_strategy_semantic'))
+            ->assertDontSee(__('admin.ai_models.chunking_title'))
+            ->assertDontSee(__('admin.ai_models.chunk_strategy_semantic'))
             ->assertSee('Gemini 3.1 Flash Lite');
     }
 

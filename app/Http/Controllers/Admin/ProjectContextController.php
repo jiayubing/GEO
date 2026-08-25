@@ -19,6 +19,7 @@ final class ProjectContextController
 
         return response()->json([
             'current_project_id' => $current?->getKey(),
+            'context_mode' => $admin->isSuperAdmin() ? 'platform' : 'project',
             'projects' => $this->access->accessibleProjects($admin)->map(fn ($project): array => [
                 'id' => (int) $project->id,
                 'name' => (string) $project->name,
