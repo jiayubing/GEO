@@ -17,6 +17,7 @@
     $frontMode = old('front_mode', method_exists($channel, 'frontMode') ? $channel->frontMode() : ((string) ($channel->front_mode ?? 'static')));
     $channelType = $channel->channelType();
     $channelConfig = $channel->resolvedChannelConfig();
+    $liejuConfig = $channel->resolvedLiejuConfig();
     $genericConfig = $channel->resolvedGenericHttpConfig();
     $frontendExperienceMode = old('frontend_experience_mode', $frontendExperienceMode ?? $channel->frontendExperienceMode());
     $frontendExperienceModes = $frontendExperienceModes ?? \App\Models\DistributionChannel::frontendExperienceModes();
@@ -191,6 +192,21 @@
                                         <option value="disabled" @selected(old('wordpress_tag_strategy', $channelConfig['wordpress_tag_strategy']) === 'disabled')>{{ __('admin.distribution.wordpress.tag_disabled') }}</option>
                                     </select>
                                 </div>
+                            </div>
+                        </div>
+                    @elseif ($channel->isLieju())
+                        <div class="rounded-lg border border-orange-100 bg-orange-50 p-5">
+                            <h2 class="text-lg font-medium text-gray-900">列举网投稿设置</h2>
+                            <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-3">
+                                <div><label for="lieju_city" class="block text-sm font-medium text-gray-700">城市 *</label><input id="lieju_city" name="lieju_city" required type="text" value="{{ old('lieju_city', $liejuConfig['lieju_city']) }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                                <div><label for="lieju_post_id" class="block text-sm font-medium text-gray-700">栏目 ID</label><input id="lieju_post_id" name="lieju_post_id" type="text" value="{{ old('lieju_post_id', $liejuConfig['lieju_post_id']) }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                                <div><label for="lieju_zone_id" class="block text-sm font-medium text-gray-700">区域 ID</label><input id="lieju_zone_id" name="lieju_zone_id" type="text" value="{{ old('lieju_zone_id', $liejuConfig['lieju_zone_id']) }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                            </div>
+                            <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-3">
+                                <div><label for="lieju_mobphone" class="block text-sm font-medium text-gray-700">手机号</label><input id="lieju_mobphone" name="lieju_mobphone" type="text" value="{{ old('lieju_mobphone', $liejuConfig['lieju_mobphone']) }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                                <div><label for="lieju_linkman" class="block text-sm font-medium text-gray-700">联系人</label><input id="lieju_linkman" name="lieju_linkman" type="text" value="{{ old('lieju_linkman', $liejuConfig['lieju_linkman']) }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                                <div><label for="lieju_post_base_url" class="block text-sm font-medium text-gray-700">投稿域名</label><input id="lieju_post_base_url" name="lieju_post_base_url" type="url" value="{{ old('lieju_post_base_url', $liejuConfig['lieju_post_base_url']) }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                                <div><label for="lieju_cookie" class="block text-sm font-medium text-gray-700">登录 Cookie</label><input id="lieju_cookie" name="lieju_cookie" type="password" autocomplete="new-password" value="{{ old('lieju_cookie') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"><p class="mt-1 text-xs text-gray-500">留空保留现有会话。</p></div>
                             </div>
                         </div>
                     @elseif ($channel->isGenericHttpApi())

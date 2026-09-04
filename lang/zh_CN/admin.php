@@ -4120,6 +4120,8 @@ return [
             'wordpress_rest_desc' => '通过 WordPress REST API 和 Application Password 发布、更新和删除文章。',
             'generic_http_api' => '通用 HTTP API',
             'generic_http_api_desc' => '按标准 JSON 载荷调用第三方系统接口，适合自研 CMS、自动化平台和低代码服务。',
+            'lieju' => '列举网',
+            'lieju_desc' => '通过列举网 HTML 投稿表单发布纯文本文章和图片。',
         ],
         'wordpress' => [
             'section_title' => 'WordPress 接入配置',

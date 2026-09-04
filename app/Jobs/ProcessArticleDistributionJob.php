@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Exceptions\PublicationGateException;
+use App\Exceptions\LiejuRemoteResultUncertainException;
 use App\Models\ArticleDistribution;
 use App\Models\DistributionChannel;
 use App\Services\GeoFlow\DistributionOrchestrator;
@@ -50,7 +51,7 @@ class ProcessArticleDistributionJob implements ShouldQueue
             }
 
             $distribution->forceFill([
-                'status' => $e instanceof PublicationGateException ? 'failed' : ($shouldRetry ? 'queued' : 'failed'),
+                'status' => $e instanceof PublicationGateException ? 'failed' : ($e instanceof LiejuRemoteResultUncertainException ? 'uncertain' : ($shouldRetry ? 'queued' : 'failed')),
                 'last_error_message' => $e instanceof PublicationGateException
                     ? 'publication_gate_blocked: '.$e->gateCode
                     : mb_substr($e->getMessage(), 0, 1000),
@@ -66,10 +67,10 @@ class ProcessArticleDistributionJob implements ShouldQueue
                 $distribution->article_id,
                 ['event' => $e instanceof PublicationGateException
                     ? 'distribution.publication_gate_blocked'
-                    : ($shouldRetry ? 'distribution.retry_scheduled' : 'distribution.failed')]
+                    : ($e instanceof LiejuRemoteResultUncertainException ? 'distribution.remote_result_uncertain' : ($shouldRetry ? 'distribution.retry_scheduled' : 'distribution.failed'))]
             );
 
-            if ($shouldRetry && ! $e instanceof PublicationGateException) {
+            if ($shouldRetry && ! $e instanceof PublicationGateException && ! $e instanceof LiejuRemoteResultUncertainException) {
                 self::dispatch((int) $distribution->id)
                     ->onQueue('distribution')
                     ->delay($retryAt);

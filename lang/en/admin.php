@@ -4108,6 +4108,8 @@ return [
             'wordpress_rest_desc' => 'Publish, update, and delete posts through the WordPress REST API and Application Passwords.',
             'generic_http_api' => 'Generic HTTP API',
             'generic_http_api_desc' => 'Send the standard GEOFlow JSON payload to third-party APIs such as custom CMSs, automation platforms, and low-code services.',
+            'lieju' => 'Lieju',
+            'lieju_desc' => 'Publish plain-text articles and images through the Lieju HTML submission form.',
         ],
         'wordpress' => [
             'section_title' => 'WordPress Connection',

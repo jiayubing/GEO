@@ -11,6 +11,7 @@
     $channelType = $channel->channelType();
     $channelTypeLabel = __('admin.distribution.channel_type.'.$channelType);
     $channelConfig = $channel->resolvedChannelConfig();
+    $liejuConfig = $channel->resolvedLiejuConfig();
     $genericConfig = $channel->resolvedGenericHttpConfig();
     $articleTextAdPolicy = \App\Models\DistributionChannel::normalizeArticleTextAdPolicy($articleTextAdPolicy ?? $channel->resolvedArticleTextAdPolicy());
     $effectiveArticleTextAds = is_array($effectiveArticleTextAds ?? null) ? $effectiveArticleTextAds : $channel->effectiveArticleTextAds();
@@ -56,6 +57,8 @@
     } elseif ($channel->isGenericHttpApi()) {
         $genericHealthPath = strtr((string) $genericConfig['generic_health_path'], ['{channel_id}' => (string) $channel->id]);
         $healthCheckUrl = rtrim((string) $channel->endpoint_url, '/').(str_starts_with($genericHealthPath, '/') ? $genericHealthPath : '/'.$genericHealthPath);
+    } elseif ($channel->isLieju()) {
+        $healthCheckUrl = rtrim((string) $channel->endpoint_url, '/').'/member/upage.php';
     }
     $indexAgentBaseUrl = str_ends_with(rtrim((string) $channel->endpoint_url, '/'), '/index.php') ? rtrim((string) $channel->endpoint_url, '/') : rtrim((string) $channel->endpoint_url, '/').'/index.php';
     $indexHealthCheckUrl = $indexAgentBaseUrl.'/geoflow-agent/v1/health';
@@ -200,6 +203,15 @@
                         <div>
                             <dt class="text-gray-500">{{ __('admin.distribution.generic.publish_endpoint') }}</dt>
                             <dd class="mt-1 break-all font-mono text-sm text-gray-900">{{ $genericConfig['generic_publish_method'] }} {{ $genericConfig['generic_publish_path'] }}</dd>
+                        </div>
+                    @elseif ($channel->isLieju())
+                        <div>
+                            <dt class="text-gray-500">城市</dt>
+                            <dd class="mt-1 font-medium text-gray-900">{{ $liejuConfig['lieju_city'] ?: __('admin.common.none') }}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-gray-500">栏目 ID</dt>
+                            <dd class="mt-1 font-medium text-gray-900">{{ $liejuConfig['lieju_post_id'] }}</dd>
                         </div>
                     @endif
                     <div>

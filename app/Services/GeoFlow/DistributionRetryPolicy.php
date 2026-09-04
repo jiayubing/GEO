@@ -2,6 +2,7 @@
 
 namespace App\Services\GeoFlow;
 
+use App\Exceptions\LiejuRemoteResultUncertainException;
 use DateTimeInterface;
 use Throwable;
 
@@ -9,6 +10,9 @@ class DistributionRetryPolicy
 {
     public function shouldRetry(Throwable $exception, int $attemptCount, int $maxAttempts): bool
     {
+        if ($exception instanceof LiejuRemoteResultUncertainException) {
+            return false;
+        }
         if ($attemptCount >= $maxAttempts) {
             return false;
         }

@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\GeoFlow\DistributionRetryPolicy;
+use App\Exceptions\LiejuRemoteResultUncertainException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -31,5 +32,12 @@ class DistributionRetryPolicyTest extends TestCase
         $policy = new DistributionRetryPolicy;
 
         $this->assertFalse($policy->shouldRetry(new RuntimeException('HTTP 500 Server Error'), 3, 3));
+    }
+
+    public function test_lieju_uncertain_result_is_never_retried(): void
+    {
+        $policy = new DistributionRetryPolicy;
+
+        $this->assertFalse($policy->shouldRetry(new LiejuRemoteResultUncertainException, 1, 3));
     }
 }

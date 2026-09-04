@@ -29,6 +29,21 @@ final class SafeOutboundRequest
         return $this;
     }
 
+    /** @param resource|string $contents */
+    public function attach(string $name, mixed $contents, ?string $filename = null, array $headers = []): self
+    {
+        $this->request = $this->request->attach($name, $contents, $filename, $headers);
+
+        return $this;
+    }
+
+    public function asMultipart(): self
+    {
+        $this->request = $this->request->asMultipart();
+
+        return $this;
+    }
+
     /** @param array<string, mixed> $query */
     public function get(string $url, array $query = []): Response
     {
@@ -47,8 +62,9 @@ final class SafeOutboundRequest
         return $this->client->delete($this->request, $url, $data, $this->maxResponseBytes);
     }
 
-    public function send(string $method, string $url): Response
+    /** @param array<string, mixed> $data */
+    public function send(string $method, string $url, array $data = []): Response
     {
-        return $this->client->send($this->request, $method, $url, [], $this->maxResponseBytes, $this->maxRedirects);
+        return $this->client->send($this->request, $method, $url, $data, $this->maxResponseBytes, $this->maxRedirects);
     }
 }

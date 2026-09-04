@@ -164,6 +164,14 @@ class DistributionController extends Controller
                 ->with('message', __('admin.distribution.message.created'));
         }
 
+        if ($channel->isLieju()) {
+            if (filled($payload['lieju_cookie'] ?? null)) {
+                $this->createLiejuSecret($channel, (string) $payload['lieju_cookie']);
+            }
+
+            return redirect()->route('admin.distribution.show', ['channelId' => (int) $channel->id])->with('message', __('admin.distribution.message.created'));
+        }
+
         $secret = $this->createChannelSecret($channel);
 
         return redirect()
@@ -266,6 +274,10 @@ class DistributionController extends Controller
                         ->where('status', 'active')
                         ->update(['status' => 'revoked']);
                     $this->createWordPressSecret($lockedChannel, (string) $payload['wordpress_application_password']);
+                }
+                if ($lockedChannel->isLieju() && filled($payload['lieju_cookie'] ?? null)) {
+                    DistributionChannelSecret::query()->where('distribution_channel_id', (int) $lockedChannel->id)->where('status', 'active')->update(['status' => 'revoked']);
+                    $this->createLiejuSecret($lockedChannel, (string) $payload['lieju_cookie']);
                 }
                 if (! $lockedChannel->isGenericHttpApi()) {
                     return $lockedChannel->fresh();
@@ -1261,7 +1273,7 @@ class DistributionController extends Controller
             'name' => ['required', 'string', 'max:120'],
             'domain' => ['required', 'string', 'max:255'],
             'endpoint_url' => ['required', 'string', 'max:500'],
-            'channel_type' => ['nullable', 'string', 'in:geoflow_agent,wordpress_rest,generic_http_api'],
+            'channel_type' => ['nullable', 'string', 'in:geoflow_agent,wordpress_rest,generic_http_api,lieju'],
             'front_mode' => ['nullable', 'string', 'in:static,rewrite'],
             'template_key' => ['nullable', 'string', 'max:120'],
             'status' => ['required', 'string', 'in:active,paused'],
@@ -1297,6 +1309,13 @@ class DistributionController extends Controller
             'generic_remote_id_path' => ['nullable', 'string', 'max:120'],
             'generic_remote_url_path' => ['nullable', 'string', 'max:120'],
             'generic_payload_wrapper' => ['nullable', 'string', 'in:none,data'],
+            'lieju_post_id' => ['nullable', 'string', 'max:30'],
+            'lieju_city' => ['required_if:channel_type,lieju', 'string', 'max:120'],
+            'lieju_zone_id' => ['nullable', 'string', 'max:30'],
+            'lieju_mobphone' => ['nullable', 'string', 'max:40'],
+            'lieju_linkman' => ['nullable', 'string', 'max:120'],
+            'lieju_post_base_url' => ['nullable', 'url', 'max:500'],
+            'lieju_cookie' => ['nullable', 'string', 'max:4000'],
             'site_name' => ['nullable', 'string', 'max:120'],
             'site_subtitle' => ['nullable', 'string', 'max:255'],
             'site_description' => ['nullable', 'string'],
@@ -1401,6 +1420,13 @@ class DistributionController extends Controller
                     ]);
                 }
                 $payload[$field] = $path;
+            }
+        }
+
+        if ($payload['channel_type'] === 'lieju' && trim((string) ($payload['lieju_post_base_url'] ?? '')) !== '') {
+            $parts = parse_url((string) $payload['lieju_post_base_url']);
+            if (! is_array($parts) || ! in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true) || ! isset($parts['host'])) {
+                throw ValidationException::withMessages(['lieju_post_base_url' => '列举网投稿域名地址无效。']);
             }
         }
 
@@ -1726,6 +1752,20 @@ class DistributionController extends Controller
             ], $channel);
         }
 
+        if ($channelType === 'lieju') {
+            $defaults = $channel?->resolvedLiejuConfig() ?? (new DistributionChannel)->resolvedLiejuConfig();
+            return $this->withExistingFrontendCapabilitiesCache([
+                'article_text_ad_policy' => $articleTextAdPolicy,
+                'frontend_experience_mode' => $frontendExperienceMode,
+                'lieju_post_id' => trim((string) ($payload['lieju_post_id'] ?? $defaults['lieju_post_id'])) ?: '239',
+                'lieju_city' => trim((string) ($payload['lieju_city'] ?? $defaults['lieju_city'])),
+                'lieju_zone_id' => trim((string) ($payload['lieju_zone_id'] ?? $defaults['lieju_zone_id'])),
+                'lieju_mobphone' => trim((string) ($payload['lieju_mobphone'] ?? $defaults['lieju_mobphone'])),
+                'lieju_linkman' => trim((string) ($payload['lieju_linkman'] ?? $defaults['lieju_linkman'])),
+                'lieju_post_base_url' => rtrim(trim((string) ($payload['lieju_post_base_url'] ?? $defaults['lieju_post_base_url'])), '/'),
+            ], $channel);
+        }
+
         if ($channelType !== 'wordpress_rest') {
             return $this->withExistingFrontendCapabilitiesCache([
                 'article_text_ad_policy' => $articleTextAdPolicy,
@@ -1829,6 +1869,17 @@ class DistributionController extends Controller
             'secret_ciphertext' => $this->apiKeyCrypto->encrypt($secret),
             'status' => 'active',
             'scopes' => ['generic.http'],
+        ]);
+    }
+
+    private function createLiejuSecret(DistributionChannel $channel, string $cookie): void
+    {
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $channel->id,
+            'key_id' => 'lj_'.Str::lower(Str::random(18)),
+            'secret_ciphertext' => $this->apiKeyCrypto->encrypt($cookie),
+            'status' => 'active',
+            'scopes' => ['lieju.web'],
         ]);
     }
 

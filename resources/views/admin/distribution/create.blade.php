@@ -59,6 +59,10 @@
                                 </span>
                             </label>
                             <label class="flex cursor-pointer gap-3 rounded-md border border-gray-200 bg-white p-4 hover:border-blue-300">
+                                <input type="radio" name="channel_type" value="lieju" class="mt-1 text-blue-600 focus:ring-blue-500" @checked($channelType === 'lieju')>
+                                <span><span class="block text-sm font-semibold text-gray-900">{{ __('admin.distribution.channel_type.lieju') }}</span><span class="mt-1 block text-sm text-gray-600">{{ __('admin.distribution.channel_type.lieju_desc') }}</span></span>
+                            </label>
+                            <label class="flex cursor-pointer gap-3 rounded-md border border-gray-200 bg-white p-4 hover:border-blue-300">
                                 <input type="radio" name="channel_type" value="wordpress_rest" class="mt-1 text-blue-600 focus:ring-blue-500" @checked($channelType === 'wordpress_rest')>
                                 <span>
                                     <span class="block text-sm font-semibold text-gray-900">{{ __('admin.distribution.channel_type.wordpress_rest') }}</span>
@@ -84,6 +88,21 @@
                             <label for="endpoint_url" class="block text-sm font-medium text-gray-700">{{ __('admin.distribution.field.endpoint_url') }} *</label>
                             <input id="endpoint_url" name="endpoint_url" type="text" required value="{{ old('endpoint_url') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500" placeholder="{{ __('admin.distribution.placeholder.endpoint_url') }}">
                             <p class="mt-1 text-xs text-gray-500">{{ __('admin.distribution.help.endpoint_url') }}</p>
+                        </div>
+                    </div>
+
+                    <div data-channel-type-panel="lieju" @class(['rounded-lg border border-orange-100 bg-orange-50 p-5', 'hidden' => $channelType !== 'lieju'])>
+                        <h2 class="text-lg font-medium text-gray-900">列举网投稿设置</h2>
+                        <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-3">
+                            <div><label for="lieju_city" class="block text-sm font-medium text-gray-700">城市 *</label><input id="lieju_city" name="lieju_city" @required($channelType === 'lieju') type="text" value="{{ old('lieju_city') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                            <div><label for="lieju_post_id" class="block text-sm font-medium text-gray-700">栏目 ID</label><input id="lieju_post_id" name="lieju_post_id" type="text" value="{{ old('lieju_post_id', '239') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                            <div><label for="lieju_zone_id" class="block text-sm font-medium text-gray-700">区域 ID</label><input id="lieju_zone_id" name="lieju_zone_id" type="text" value="{{ old('lieju_zone_id') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                        </div>
+                        <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-3">
+                            <div><label for="lieju_mobphone" class="block text-sm font-medium text-gray-700">手机号</label><input id="lieju_mobphone" name="lieju_mobphone" type="text" value="{{ old('lieju_mobphone') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                            <div><label for="lieju_linkman" class="block text-sm font-medium text-gray-700">联系人</label><input id="lieju_linkman" name="lieju_linkman" type="text" value="{{ old('lieju_linkman') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                            <div><label for="lieju_post_base_url" class="block text-sm font-medium text-gray-700">投稿域名（可选）</label><input id="lieju_post_base_url" name="lieju_post_base_url" type="url" placeholder="https://post.lieju.com" value="{{ old('lieju_post_base_url') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
+                            <div><label for="lieju_cookie" class="block text-sm font-medium text-gray-700">登录 Cookie（可选）</label><input id="lieju_cookie" name="lieju_cookie" type="password" autocomplete="new-password" value="{{ old('lieju_cookie') }}" class="mt-1 block w-full rounded-md border-gray-300 text-sm shadow-sm"></div>
                         </div>
                     </div>
 
@@ -332,6 +351,10 @@
                 document.querySelectorAll('[data-channel-type-panel]').forEach(function (panel) {
                     panel.classList.toggle('hidden', panel.dataset.channelTypePanel !== event.target.value);
                 });
+                var liejuCity = document.getElementById('lieju_city');
+                if (liejuCity) {
+                    liejuCity.required = event.target.value === 'lieju';
+                }
             }
             if (event.target.matches('#generic_auth_type')) {
                 toggleGenericAuthFields();

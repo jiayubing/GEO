@@ -429,7 +429,7 @@ class DistributionChannel extends Model
     {
         $type = (string) ($this->channel_type ?? 'geoflow_agent');
 
-        return in_array($type, ['geoflow_agent', 'wordpress_rest', 'generic_http_api'], true) ? $type : 'geoflow_agent';
+        return in_array($type, ['geoflow_agent', 'wordpress_rest', 'generic_http_api', 'lieju'], true) ? $type : 'geoflow_agent';
     }
 
     public function isGeoFlowAgent(): bool
@@ -445,6 +445,25 @@ class DistributionChannel extends Model
     public function isGenericHttpApi(): bool
     {
         return $this->channelType() === 'generic_http_api';
+    }
+
+    public function isLieju(): bool
+    {
+        return $this->channelType() === 'lieju';
+    }
+
+    /** @return array{lieju_post_id:string,lieju_city:string,lieju_zone_id:string,lieju_mobphone:string,lieju_linkman:string,lieju_post_base_url:string} */
+    public function resolvedLiejuConfig(): array
+    {
+        $stored = is_array($this->channel_config) ? $this->channel_config : [];
+        return [
+            'lieju_post_id' => trim((string) ($stored['lieju_post_id'] ?? '239')) ?: '239',
+            'lieju_city' => trim((string) ($stored['lieju_city'] ?? '')),
+            'lieju_zone_id' => trim((string) ($stored['lieju_zone_id'] ?? '')),
+            'lieju_mobphone' => trim((string) ($stored['lieju_mobphone'] ?? '')),
+            'lieju_linkman' => trim((string) ($stored['lieju_linkman'] ?? '')),
+            'lieju_post_base_url' => rtrim(trim((string) ($stored['lieju_post_base_url'] ?? '')), '/'),
+        ];
     }
 
     /**
